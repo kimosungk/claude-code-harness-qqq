@@ -30,6 +30,7 @@ resolve_agent_type() {
   if [[ -z "$resolved" ]]; then
     resolved="${QQQ_AGENT:-}"
   fi
+  resolved="${resolved##*:}"
   printf '%s\n' "$resolved"
 }
 

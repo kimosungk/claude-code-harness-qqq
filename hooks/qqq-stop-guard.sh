@@ -27,6 +27,7 @@ resolve_agent_type() {
   if [[ -z "$resolved" ]]; then
     resolved="${QQQ_AGENT:-}"
   fi
+  resolved="${resolved##*:}"
   printf '%s\n' "$resolved"
 }
 
@@ -52,6 +53,9 @@ fi
 
 missing=()
 case "$agent_type" in
+  req-clarifier)
+    [[ -f "$session_dir/phase1-spec.md" ]] || missing+=(phase1-spec.md)
+    ;;
   tech-interviewer)
     [[ -f "$session_dir/phase1-tech-spec.md" ]] || missing+=(phase1-tech-spec.md)
     ;;

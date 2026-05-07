@@ -116,6 +116,10 @@ phase_artifact_owner() {
     phase3-*-review-*.md)
       printf 'code-implement-reviewer\n'
       ;;
+    # Rebase conflict artifacts (any phase)
+    rebase-conflict-*.md|rebase-conflict-*.json)
+      printf 'rebase-conflict-resolver\n'
+      ;;
     *)
       printf '\n'
       ;;
@@ -238,6 +242,12 @@ if [[ "$artifact_owner" == "code-implement-reviewer" ]]; then
   exit 0
 fi
 
+if [[ "$artifact_owner" == "rebase-conflict-resolver" ]]; then
+  matches_any_agent "$agent_type" rebase-conflict-resolver \
+    || block "$rel_path is owned by rebase-conflict-resolver (current agent: ${agent_type:-main-session})"
+  exit 0
+fi
+
 # ── Unrecognized file written by a phase agent ────────────────────────────
 # Fail-open with a loud warning: phase agents can still write misc files
 # (e.g., scratch notes, helper scripts) that aren't registered artifacts.
@@ -245,7 +255,8 @@ fi
 case "$agent_type" in
   req-clarifier|ui-outliner|nltp-interviewer|nltp-reviewer|tech-interviewer|\
 code-planner|code-plan-review-explorer|code-plan-review-architect|\
-code-plan-review-critic|code-implementer|code-implement-reviewer)
+code-plan-review-critic|code-implementer|code-implement-reviewer|\
+rebase-conflict-resolver)
     printf '[qqq-hooks] warning: %s wrote %s which has no recognized qqq artifact owner. Allowing — if this is intentional, add the pattern to phase_artifact_owner() in qqq-protect-files.sh.\n' \
       "$agent_type" "$rel_path" >&2
     ;;

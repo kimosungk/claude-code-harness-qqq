@@ -2365,7 +2365,8 @@ run_agent() {
       allowed_tools+=",Bash(wc *),Bash(which codex),Bash(codex *),Write(./claude-works/**),Write(../claude-works/**),Write(../../claude-works/**),Write(../../../claude-works/**),Task"
       ;;
   esac
-  local qqq_plugin_dir="/home/hskim/.claude/plugins/local/hskim-plugins/plugins/qqq"
+  local qqq_plugin_dir
+  qqq_plugin_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
   local qqq_skill_root="$qqq_plugin_dir/skills"
   local qqq_agent_root="$qqq_plugin_dir/agents"
   local cmd

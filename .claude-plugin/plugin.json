@@ -4,5 +4,7 @@
   "version": "2.0.0",
   "author": {
     "name": "hskim"
-  }
+  },
+  "homepage": "https://github.com/kimosungk/claude-code-harness-qqq",
+  "repository": "https://github.com/kimosungk/claude-code-harness-qqq"
 }
