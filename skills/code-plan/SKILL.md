@@ -221,7 +221,12 @@ Loop up to `iterations` times. One round:
    In that case, stop immediately, tell the user the review pipeline is blocked by infrastructure, and do **not** spend the remaining review budget pretending it was substantive review.
 14. If the round verdict is `REJECT`, revise `phase2-code-plan.md` to address the logged planner actions. Keep the diff minimal.
 15. If the round verdict is `OKAY`, stop the loop.
-16. If round `k == iterations` and the latest round verdict is still `REJECT`, stop the loop and set the plan status to `Ready with caveats`. List the unresolved issues prominently in section 7.
+16. If round `k == iterations` and the latest round verdict is still `REJECT`, do **not** silently fall through to handoff. Use `AskUserQuestion` to ask the user whether to:
+    - **proceed as `Ready with caveats`** — accept the unresolved issues and let `phase2-code-plan.md` be handed to implementation as-is
+    - **run one more review round** — extend the budget by one round and re-enter the loop at step 1 with `k = k + 1`
+    - **stop** — leave the loop incomplete and surface the blockers without marking `review_loop_completed: true`
+
+    Only after the user answers, set the plan status accordingly. If the user picked `Ready with caveats`, list the unresolved issues prominently in section 7. If the user picked stop, leave `review_loop_completed: false` in `phase2-review-state.json`.
 
 Do not parallelize review rounds. Each round must read the revised plan.
 

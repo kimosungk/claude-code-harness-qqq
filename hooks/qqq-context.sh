@@ -4,6 +4,20 @@ set -euo pipefail
 
 cwd=$(pwd)
 agent_type="${QQQ_AGENT:-unknown}"
+
+is_session_dir() {
+  local dir="$1"
+  [[ -f "$dir/phase1-spec.md" \
+    || -f "$dir/phase2-code-plan.md" \
+    || -f "$dir/phase3-implement-log.md" \
+    || -f "$dir/.qqq.lock" \
+    || -d "$dir/.qqq" ]]
+}
+
+if [[ -z "${QQQ_SESSION_DIR:-}" ]] && ! is_session_dir "$cwd"; then
+  exit 0
+fi
+
 session_dir="${QQQ_SESSION_DIR:-$cwd}"
 
 expected_artifact="phase1-spec.md"

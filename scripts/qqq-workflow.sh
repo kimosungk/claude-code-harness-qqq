@@ -1831,9 +1831,9 @@ phase_title() {
 phase_desc() {
   case "$1" in
     req-clarifier)    echo 'Clarify the requirement and write phase1-spec.md.' ;;
-    ui-outliner)      echo 'Draft a minimal UI outline and save phase1-ui-outline.md/html.' ;;
-    nltp-interviewer) echo 'Draft the Korean Gherkin NLTP in phase1-nltp.md.' ;;
-    tech-interviewer) echo 'Lock the technical spec in phase1-tech-spec.md.' ;;
+    ui-outliner)      echo 'Draft a minimal UI outline and save phase1-ui-outline.md/html. (Optional — run before tech-interviewer if desired.)' ;;
+    nltp-interviewer) echo 'Draft the Korean Gherkin NLTP in phase1-nltp.md. (Optional — run before tech-interviewer if desired.)' ;;
+    tech-interviewer) echo 'Lock the technical spec in phase1-tech-spec.md. (Required before code-planner.)' ;;
     code-planner)     echo 'Build the reviewed implementation plan in phase2-code-plan.md.' ;;
     code-implementer) echo 'Execute the plan and write phase3-implement-log.md.' ;;
     resolve-rebase-conflict) echo 'Resume and resolve an in-progress worktree rebase conflict.' ;;
@@ -2485,7 +2485,8 @@ rewind_session() {
   if (( rewind_to <= 3 )); then
     targets+=(phase3-implement-log.md)
     local f
-    for f in "$sess"/phase3-codex-review-*.md; do
+    for f in "$sess"/phase3-codex-review-*.md \
+             "$sess"/phase3-claude-review-*.md; do
       [[ -f "$f" ]] && targets+=("$(basename "$f")")
     done
   fi

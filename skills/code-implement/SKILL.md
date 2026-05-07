@@ -3,7 +3,7 @@ name: code-implement
 description: "qqq:code-implement — Execute an implementation plan and harden the diff through iterative review via qqq:code-implement-reviewer (Codex-first, Claude fallback on infrastructure failure). Primary input: phase2-code-plan.md. Optional read-only references: phase1-tech-spec.md and phase1-nltp.md when present. Output: phase3-implement-log.md in the same session directory + the actual code changes in the repo."
 argument-hint: "<path to phase2-code-plan.md or session dir> [iterations=N]"
 disable-model-invocation: false
-allowed-tools: Read, Grep, Glob, Write, Edit, Bash, Task
+allowed-tools: Read, Grep, Glob, Write, Edit, Bash, Task, AskUserQuestion
 model: opus
 effort: high
 ---
@@ -121,7 +121,12 @@ Loop up to `iterations` rounds. One round:
 
 5. If verdict is `OKAY`, break.
 
-6. If round `k == iterations` and verdict is still `REJECT`, break and set final status to `"Complete with caveats — {N} unresolved"`.
+6. If round `k == iterations` and verdict is still `REJECT`, do **not** silently set caveats and exit. Use `AskUserQuestion` to ask the user whether to:
+    - **finalize as `Complete with caveats — {N} unresolved`** — accept the remaining issues and close the implementation phase
+    - **run one more review round** — extend by one round and re-enter the loop at step 1 with `k = k + 1`
+    - **stop** — leave the implementation incomplete and surface the unresolved issues without finalizing
+
+    Apply the user's choice. If the user picked stop, do not append a final-status line; simply summarize the unresolved issues and the current diff state.
 
 Do not parallelize reviewer calls. Each round re-reads the current working tree.
 
