@@ -355,6 +355,15 @@ qqq_session_is_legacy_blocked() {
   base=$(basename "$session_dir")
   [[ "$base" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}_.+ ]] || return 1
 
+  # Current-format leader-mode session: .qqq/session.json or any phase artifact present.
+  # These sessions live under leader's claude-works/ but are resumable.
+  [[ -f "$session_dir/.qqq/session.json" ]] && return 1
+  [[ -f "$session_dir/phase0-issue.md" \
+     || -f "$session_dir/phase1-spec.md" \
+     || -f "$session_dir/phase1-tech-spec.md" \
+     || -f "$session_dir/phase2-code-plan.md" \
+     || -f "$session_dir/phase3-implement-log.md" ]] && return 1
+
   wt_root=$(qqq_session_dir_worktree "$session_dir")
   [[ -z "$wt_root" ]] || return 1
 
@@ -595,6 +604,56 @@ qqq_write_json_file() {
     return 1
   }
   mv "$tmp_path" "$path"
+}
+
+qqq_session_state_path() {
+  printf '%s/.qqq/session.json' "$1"
+}
+
+qqq_session_state_write() {
+  local session_dir="$1" slug="$2" created_at="$3"
+  local base_branch="$4" worktree_path="$5" leader_repo="$6"
+  local state_path
+  state_path=$(qqq_session_state_path "$session_dir")
+  qqq_write_json_file "$state_path" \
+    schema_version "1" \
+    slug "$slug" \
+    created_at "$created_at" \
+    base_branch "$base_branch" \
+    worktree_path "$worktree_path" \
+    leader_repo "$leader_repo"
+}
+
+qqq_session_state_get() {
+  local session_dir="$1" key="$2"
+  qqq_json_read_string_key "$(qqq_session_state_path "$session_dir")" "$key"
+}
+
+qqq_session_state_exists() {
+  [[ -f $(qqq_session_state_path "$1") ]]
+}
+
+# Atomic field update: read all known fields, override one, re-write.
+# Unknown keys return 2 (caller bug).
+qqq_session_state_set_field() {
+  local session_dir="$1" key="$2" value="$3"
+  local state_path slug created_at base_branch worktree_path leader_repo
+  state_path=$(qqq_session_state_path "$session_dir")
+  [[ -f "$state_path" ]] || return 1
+  slug=$(qqq_session_state_get "$session_dir" slug 2>/dev/null || printf '')
+  created_at=$(qqq_session_state_get "$session_dir" created_at 2>/dev/null || printf '')
+  base_branch=$(qqq_session_state_get "$session_dir" base_branch 2>/dev/null || printf '')
+  worktree_path=$(qqq_session_state_get "$session_dir" worktree_path 2>/dev/null || printf '')
+  leader_repo=$(qqq_session_state_get "$session_dir" leader_repo 2>/dev/null || printf '')
+  case "$key" in
+    slug)          slug="$value" ;;
+    created_at)    created_at="$value" ;;
+    base_branch)   base_branch="$value" ;;
+    worktree_path) worktree_path="$value" ;;
+    leader_repo)   leader_repo="$value" ;;
+    *) printf '[qqq] qqq_session_state_set_field: unknown key %q\n' "$key" >&2; return 2 ;;
+  esac
+  qqq_session_state_write "$session_dir" "$slug" "$created_at" "$base_branch" "$worktree_path" "$leader_repo"
 }
 
 qqq_merge_state_path() {
@@ -1690,6 +1749,46 @@ select_session() {
   done
 }
 
+# Resolve a base branch for worktree creation.
+#   1. QQQ_CLI_BASE_BRANCH (set by --base/-b) wins without prompting.
+#   2. Empty input    -> origin/<dev>.
+#   3. Literal ?      -> fzf over `git branch -a` (locals + origin/*).
+#   4. Anything else  -> the literal value.
+qqq_prompt_base_branch() {
+  local dev_branch="$1" leader_repo="${2:-$PWD}"
+
+  if [[ -n "${QQQ_CLI_BASE_BRANCH:-}" ]]; then
+    printf '%s' "$QQQ_CLI_BASE_BRANCH"
+    return 0
+  fi
+
+  local default_ref="origin/$dev_branch"
+  local raw
+  qqq_read_prompt "[qqq] base branch [$default_ref] (? for fzf): " raw || return 1
+
+  if [[ -z "$raw" ]]; then
+    printf '%s' "$default_ref"
+    return 0
+  fi
+
+  if [[ "$raw" == "?" ]]; then
+    local picked
+    picked=$(
+      git -C "$leader_repo" branch -a 2>/dev/null \
+        | sed -E 's/^[* +]+//; s/ ->.*//' \
+        | sed -E 's@^remotes/@@' \
+        | grep -E '^(origin/|[^/]+$)' \
+        | sort -u \
+        | qqq_fzf --prompt='base branch > ' --query "$default_ref" --height=40%
+    ) || return 1
+    [[ -n "$picked" ]] || return 1
+    printf '%s' "$picked"
+    return 0
+  fi
+
+  printf '%s' "$raw"
+}
+
 create_new_session() {
   local slug
   qqq_read_prompt '[qqq] feature slug (kebab-case): ' slug || return 1
@@ -1698,9 +1797,61 @@ create_new_session() {
     printf '[qqq] empty slug; aborting.\n' >&2
     return 1
   fi
-  local session_name
+
+  local leader_repo
+  leader_repo=$(qqq_leader_repo_from "$PWD" 2>/dev/null) || leader_repo=""
+  if [[ -z "$leader_repo" ]]; then
+    printf '[qqq] not inside a git repo — cannot create session.\n' >&2
+    return 1
+  fi
+
+  # D10a — slug collision across active session locations.
+  local collision="" existing wt_path
+  for existing in "$QQQ_WORKS_DIR"/*_"$slug"; do
+    [[ -d "$existing" ]] || continue
+    collision="$existing"
+    break
+  done
+  if [[ -z "$collision" ]]; then
+    wt_path=$(qqq_worktree_path_for "$leader_repo" "$slug")
+    if [[ -d "$wt_path" ]]; then
+      collision="$wt_path"
+    fi
+  fi
+  if [[ -n "$collision" ]]; then
+    printf '[qqq] active session for slug %q already exists: %s\n' "$slug" "$collision" >&2
+    printf '[qqq] resume the existing session, or pick a different slug.\n' >&2
+    return 1
+  fi
+
+  local session_name session_dir created_at
   session_name="$(date +%Y-%m-%d)_${slug}"
-  qqq_bootstrap_session_worktree "$session_name"
+  session_dir="$QQQ_WORKS_DIR/$session_name"
+  if [[ -d "$session_dir" ]]; then
+    printf '[qqq] session dir already exists: %s\n' "$session_dir" >&2
+    return 1
+  fi
+
+  mkdir -p "$session_dir/.qqq" || {
+    printf '[qqq] failed to mkdir %s\n' "$session_dir" >&2
+    return 1
+  }
+
+  created_at=$(qqq_iso_timestamp)
+  if ! qqq_session_state_write "$session_dir" "$slug" "$created_at" "" "" "$leader_repo"; then
+    printf '[qqq] failed to write session.json\n' >&2
+    rmdir "$session_dir/.qqq" "$session_dir" 2>/dev/null || true
+    return 1
+  fi
+
+  qqq_log_workflow_event "session_create" "completed" "" "$session_dir" \
+    "schema_version" "$QQQ_LOG_SCHEMA_VERSION" \
+    "slug" "$slug" \
+    "leader_repo" "$leader_repo"
+
+  printf '[qqq] created leader-mode session: %s\n' "$session_dir" >&2
+  printf '[qqq] no worktree yet — pick `worktree-create` when ready to isolate code changes.\n' >&2
+  printf '%s' "$session_dir"
 }
 
 # ---------------------------------------------------------------------------
