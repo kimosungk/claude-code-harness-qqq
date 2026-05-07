@@ -149,6 +149,17 @@ if [[ "$base_name" == ".qqq.lock" ]]; then
   block ".qqq.lock is runtime-owned and may not be edited by Claude"
 fi
 
+# ── Launcher-owned files (Phase 0 + session metadata) ─────────────────────
+# phase0-issue.md is written by `qqq register-issue` (shell action, no agent).
+# .qqq/session.json is written by create_new_session / worktree-create / merge.
+# Phase agents may *read* these but never edit them — protect against drift.
+if [[ "$base_name" == "phase0-issue.md" ]]; then
+  block "phase0-issue.md is owned by qqq-launcher (run register-issue to update) — agents must not edit it"
+fi
+if [[ "$base_name" == "session.json" && "$rel_path" == */.qqq/session.json ]]; then
+  block ".qqq/session.json is owned by qqq-launcher (worktree-create / merge) — agents must not edit it"
+fi
+
 # ── Completed archive is frozen ────────────────────────────────────────────
 if [[ "$rel_path" == claude-works-completed/* || "$rel_path" == */claude-works-completed/* ]]; then
   block "completed archive artifacts are frozen: $rel_path"

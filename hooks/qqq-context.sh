@@ -7,9 +7,11 @@ agent_type="${QQQ_AGENT:-unknown}"
 
 is_session_dir() {
   local dir="$1"
-  [[ -f "$dir/phase1-spec.md" \
+  [[ -f "$dir/phase0-issue.md" \
+    || -f "$dir/phase1-spec.md" \
     || -f "$dir/phase2-code-plan.md" \
     || -f "$dir/phase3-implement-log.md" \
+    || -f "$dir/.qqq/session.json" \
     || -f "$dir/.qqq.lock" \
     || -d "$dir/.qqq" ]]
 }
@@ -20,21 +22,24 @@ fi
 
 session_dir="${QQQ_SESSION_DIR:-$cwd}"
 
-expected_artifact="phase1-spec.md"
+# Default fallback covers the very first action in a fresh session.
+expected_artifact="phase0-issue.md (run register-issue) — optional, or phase1-spec.md (run req-clarifier)"
 # Guard against malformed state first — a half-rewind or manual rm can leave
 # downstream artifacts without their upstream prerequisite. Flag it loudly
-# instead of quietly advising the next downstream artifact.
-if [[ -f "$cwd/phase2-code-plan.md" && ! -f "$cwd/phase1-tech-spec.md" ]]; then
+# instead of quietly advising the next downstream artifact. All checks read
+# from $session_dir (not $cwd) so the hook works even when an agent runs
+# from a launch-relative cwd above the session directory.
+if [[ -f "$session_dir/phase2-code-plan.md" && ! -f "$session_dir/phase1-tech-spec.md" ]]; then
   expected_artifact="phase1-tech-spec.md (MISSING — malformed state: phase2-code-plan.md exists without prerequisite)"
-elif [[ -f "$cwd/phase3-implement-log.md" && ! -f "$cwd/phase2-code-plan.md" ]]; then
+elif [[ -f "$session_dir/phase3-implement-log.md" && ! -f "$session_dir/phase2-code-plan.md" ]]; then
   expected_artifact="phase2-code-plan.md (MISSING — malformed state: phase3-implement-log.md exists without prerequisite)"
-elif [[ -f "$cwd/phase1-spec.md" && ! -f "$cwd/phase1-tech-spec.md" ]]; then
+elif [[ -f "$session_dir/phase1-spec.md" && ! -f "$session_dir/phase1-tech-spec.md" ]]; then
   expected_artifact="phase1-tech-spec.md"
-elif [[ -f "$cwd/phase1-tech-spec.md" && ! -f "$cwd/phase2-code-plan.md" ]]; then
+elif [[ -f "$session_dir/phase1-tech-spec.md" && ! -f "$session_dir/phase2-code-plan.md" ]]; then
   expected_artifact="phase2-code-plan.md"
-elif [[ -f "$cwd/phase2-code-plan.md" && ! -f "$cwd/phase3-implement-log.md" ]]; then
+elif [[ -f "$session_dir/phase2-code-plan.md" && ! -f "$session_dir/phase3-implement-log.md" ]]; then
   expected_artifact="phase3-implement-log.md"
-elif compgen -G "$cwd/phase3-*-review-*.md" >/dev/null; then
+elif compgen -G "$session_dir/phase3-*-review-*.md" >/dev/null; then
   expected_artifact="worktree-merge or claude-works-completed archive"
 fi
 
