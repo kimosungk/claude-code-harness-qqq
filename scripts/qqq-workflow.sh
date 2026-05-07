@@ -170,6 +170,24 @@ qqq_origin_dev_branch() {
   printf '%s' "${QQQ_DEV_BRANCH:-dev}"
 }
 
+# Resolve the effective dev branch for a session: prefer base_branch from
+# .qqq/session.json (set by worktree-create); fall back to QQQ_DEV_BRANCH
+# with a stderr warning. Output is the bare branch name (no `origin/` prefix);
+# callers always do `git fetch origin "$branch"` etc.
+qqq_session_dev_branch() {
+  local session_dir="$1"
+  local raw=""
+  raw=$(qqq_session_state_get "$session_dir" base_branch 2>/dev/null || printf '')
+  if [[ -z "$raw" ]]; then
+    local fb
+    fb=$(qqq_origin_dev_branch)
+    printf '[qqq] warning: session.json missing base_branch; falling back to origin/%s\n' "$fb" >&2
+    printf '%s' "$fb"
+    return 0
+  fi
+  printf '%s' "${raw#origin/}"
+}
+
 qqq_launch_cwd() {
   printf '%s' "${QQQ_LAUNCH_PWD:-$PWD}"
 }
@@ -1321,10 +1339,22 @@ session_preview() {
     none)        printf 'worktree: (none)\n' ;;
     no-repo)     printf 'worktree: (not inside a git repo)\n' ;;
   esac
+
+  # base_branch from .qqq/session.json (set by worktree-create).
+  if qqq_session_state_exists "$dir"; then
+    local base_branch_pv
+    base_branch_pv=$(qqq_session_state_get "$dir" base_branch 2>/dev/null)
+    if [[ -n "$base_branch_pv" ]]; then
+      printf 'base_branch: %s\n' "$base_branch_pv"
+    else
+      printf 'base_branch: (unset — set by worktree-create)\n'
+    fi
+  fi
   printf '\n'
 
   printf 'Phase progress:\n'
-  for f in phase1-spec.md phase1-ui-outline.md phase1-ui-outline.html phase1-nltp.md \
+  for f in phase0-issue.md \
+           phase1-spec.md phase1-ui-outline.md phase1-ui-outline.html phase1-nltp.md \
            phase1-tech-spec.md \
            phase2-code-plan.md phase2-review-log.md phase2-review-state.json \
            phase3-implement-log.md; do
@@ -1959,6 +1989,7 @@ detect_next_phase() {
 
 phase_title() {
   case "$1" in
+    register-issue)   echo 'Phase0 · register-issue' ;;
     req-clarifier)    echo 'Phase1 T1 · req-clarifier' ;;
     ui-outliner)      echo 'Phase1 T2 · ui-outliner' ;;
     nltp-interviewer) echo 'Phase1 T3 · nltp-interviewer' ;;
@@ -1967,6 +1998,7 @@ phase_title() {
     code-implementer) echo 'Phase3 T1 · code-implementer' ;;
     resolve-rebase-conflict) echo 'Recovery · resolve rebase conflict' ;;
     merge-resume-push) echo 'Recovery · resume pending push' ;;
+    worktree-create)  echo 'Worktree · create (isolate session)' ;;
     worktree-open)    echo 'Worktree · open shell' ;;
     worktree-merge)   echo 'Worktree · merge session branch' ;;
     worktree-remove)  echo 'Worktree · remove / clean up' ;;
@@ -1981,6 +2013,7 @@ phase_title() {
 
 phase_desc() {
   case "$1" in
+    register-issue)   echo 'Register or pick a GitLab issue and save it as phase0-issue.md. (Optional — req-clarifier accepts it as context if present.)' ;;
     req-clarifier)    echo 'Clarify the requirement and write phase1-spec.md.' ;;
     ui-outliner)      echo 'Draft a minimal UI outline and save phase1-ui-outline.md/html. (Optional — run before tech-interviewer if desired.)' ;;
     nltp-interviewer) echo 'Draft the Korean Gherkin NLTP in phase1-nltp.md. (Optional — run before tech-interviewer if desired.)' ;;
@@ -1989,8 +2022,9 @@ phase_desc() {
     code-implementer) echo 'Execute the plan and write phase3-implement-log.md.' ;;
     resolve-rebase-conflict) echo 'Resume and resolve an in-progress worktree rebase conflict.' ;;
     merge-resume-push) echo 'Retry the saved push after a prior merge completed locally.' ;;
+    worktree-create)  echo 'Create a linked git worktree from a chosen base branch and migrate this session into it.' ;;
     worktree-open)    echo 'Open a tmux shell window rooted at the current worktree.' ;;
-    worktree-merge)   echo 'Rebase onto origin/dev, merge the session branch, push, and clean up.' ;;
+    worktree-merge)   echo 'Rebase onto the recorded base branch, merge the session branch, push, and clean up.' ;;
     worktree-remove)  echo 'Selectively remove the worktree, branch, or remote leftovers.' ;;
     done)             echo 'Completed session. Read-only browsing actions only.' ;;
     rewind)           echo 'Delete later-phase artifacts so you can rerun from an earlier phase.' ;;
@@ -2013,6 +2047,9 @@ phase_status_mark() {
   merge_status=$(qqq_session_merge_display_status "$sess")
 
   case "$opt" in
+    register-issue)
+      [[ -f "$sess/phase0-issue.md" ]] && printf '●' || printf ' '
+      ;;
     req-clarifier)
       [[ -f "$sess/phase1-spec.md" ]] && printf '●' || printf ' '
       ;;
@@ -2031,6 +2068,9 @@ phase_status_mark() {
     code-implementer)
       [[ -f "$sess/phase3-implement-log.md" ]] && printf '●' || printf ' '
       ;;
+    worktree-create)
+      [[ -n "$wt_root" ]] && printf '●' || printf ' '
+      ;;
     merge-resume-push)
       [[ "$merge_status" != "push_pending" ]] && [[ -n "$merge_status" ]] && printf '●' || printf ' '
       ;;
@@ -2046,14 +2086,18 @@ phase_status_mark() {
 
 select_action() {
   local sess="$1" suggested="$2"
-  # Active sessions are worktree-first. Completed (archived) sessions get a
-  # read-only menu.
-  local leader_repo="" wt_root="" merge_status="" rebase_in_progress=no
+  # Sessions can be in leader-mode (no worktree) or worktree-mode. Completed
+  # (archived) sessions get a read-only menu.
+  local leader_repo="" wt_root="" wt_state="" merge_status="" rebase_in_progress=no
   leader_repo=$(qqq_leader_repo_from "$sess" 2>/dev/null) \
     || leader_repo=$(qqq_leader_repo_from "$PWD" 2>/dev/null) \
     || leader_repo=""
   if [[ -n "$leader_repo" ]]; then
     wt_root=$(qqq_session_dir_worktree "$sess")
+    local _wt_status_line
+    _wt_status_line=$(qqq_session_worktree_status "$sess" "$leader_repo" 2>/dev/null) || _wt_status_line=""
+    wt_state="${_wt_status_line##*$'\t'}"
+    wt_state="${wt_state%$'\n'}"
     if [[ -n "$wt_root" ]] && qqq_worktree_rebase_in_progress "$wt_root"; then
       rebase_in_progress=yes
     fi
@@ -2074,24 +2118,37 @@ select_action() {
     )
   else
     options=(
+      register-issue
       req-clarifier
       ui-outliner
       nltp-interviewer
       tech-interviewer
       code-planner
       code-implementer
-      worktree-open
-      worktree-remove
       rewind
       view-artifacts
       open-session-dir
     )
+    # Worktree actions are conditional on the worktree being live (or absent).
+    if [[ "$wt_state" == "live" ]]; then
+      options+=(worktree-open worktree-remove)
+    else
+      options+=(worktree-create)
+    fi
     if [[ "$rebase_in_progress" == "yes" ]]; then
       options=(resolve-rebase-conflict "${options[@]}")
     fi
-    if [[ -f "$sess/phase3-implement-log.md" ]]; then
+    # worktree-merge requires a live worktree (Stage 11 enforces this in
+    # detect_next_phase too); keep the picker symmetric.
+    if [[ -f "$sess/phase3-implement-log.md" && "$wt_state" == "live" ]]; then
       options+=(worktree-merge)
     fi
+  fi
+
+  # Leader-mode banner (M4): only when no worktree and no active recovery state.
+  local leader_mode_banner=""
+  if [[ -z "$wt_root" && -z "$merge_status" ]]; then
+    leader_mode_banner="no worktree — code changes touch leader directly · pick worktree-create when ready"$'\n'
   fi
 
   # Build a "last run: ..." header line from .qqq/agent-<role>.{start,exit}.
@@ -2146,7 +2203,7 @@ select_action() {
     } | qqq_fzf --read0 --ansi \
           --delimiter='|' --with-nth=2.. --accept-nth=1 \
           --prompt="next > " \
-          --header=$'Enter to run · Esc/Ctrl-C to change session\n[★] suggested   [●] done   [ ] available\n'"session: $(basename "$sess")   ·   suggested: ${suggested}${last_run_line}" \
+          --header="${leader_mode_banner}"$'Enter to run · Esc/Ctrl-C to change session\n[★] suggested   [●] done   [ ] available\n'"session: $(basename "$sess")   ·   suggested: ${suggested}${last_run_line}" \
           --height=80% \
           --gap=1 \
           --wrap=word \
@@ -2852,6 +2909,7 @@ rollback_worktree_create() {
 qqq_bootstrap_session_worktree() {
   local session_name="$1"
   local source_session_dir="${2:-}"
+  local explicit_base_branch="${3:-}"
   local leader_repo
   leader_repo=$(qqq_leader_repo_from "${source_session_dir:-$PWD}" 2>/dev/null) \
     || leader_repo=$(qqq_leader_repo_from "$PWD" 2>/dev/null) \
@@ -2879,9 +2937,17 @@ qqq_bootstrap_session_worktree() {
 
   local dev_branch
   dev_branch=$(qqq_origin_dev_branch)
+  # base_ref is what the worktree will branch from. Default origin/<dev>.
+  # explicit_base_branch (Stage 5) lets the user override (e.g. origin/main).
+  local base_ref="$explicit_base_branch"
+  [[ -n "$base_ref" ]] || base_ref="origin/$dev_branch"
+
   if [[ "${QQQ_NO_FETCH:-0}" != "1" ]]; then
-    if ! git -C "$leader_repo" fetch origin "$dev_branch" 2>/dev/null; then
-      printf '[qqq] `git fetch origin %s` failed. Set QQQ_NO_FETCH=1 to skip, or check remote/auth.\n' "$dev_branch" >&2
+    # Fetch the remote that base_ref points at (default = origin).
+    local _fetch_branch="$dev_branch"
+    [[ "$base_ref" == origin/* ]] && _fetch_branch="${base_ref#origin/}"
+    if ! git -C "$leader_repo" fetch origin "$_fetch_branch" 2>/dev/null; then
+      printf '[qqq] `git fetch origin %s` failed. Set QQQ_NO_FETCH=1 to skip, or check remote/auth.\n' "$_fetch_branch" >&2
       return 1
     fi
   fi
@@ -2914,13 +2980,18 @@ qqq_bootstrap_session_worktree() {
     fi
     created_wt=yes
   else
-    local base_ref="origin/$dev_branch"
-    if ! qqq_branch_exists "$leader_repo" "$dev_branch" remote; then
-      printf '[qqq] origin/%s not found. Set QQQ_DEV_BRANCH or push the branch first.\n' "$dev_branch" >&2
+    if [[ "$base_ref" == origin/* ]]; then
+      local _rb="${base_ref#origin/}"
+      if ! qqq_branch_exists "$leader_repo" "$_rb" remote; then
+        printf '[qqq] %s not found. Push it first or pick a different base.\n' "$base_ref" >&2
+        return 1
+      fi
+    elif ! qqq_branch_exists "$leader_repo" "$base_ref" any; then
+      printf '[qqq] base branch %s not found (local or remote).\n' "$base_ref" >&2
       return 1
     fi
     if ! git -C "$leader_repo" worktree add -b "$branch" "$wt_path" "$base_ref" >&2; then
-      printf '[qqq] `git worktree add -b %s` failed.\n' "$branch" >&2
+      printf '[qqq] `git worktree add -b %s` from %s failed.\n' "$branch" "$base_ref" >&2
       return 1
     fi
     created_wt=yes
@@ -2934,10 +3005,14 @@ qqq_bootstrap_session_worktree() {
     moved_from="$source_session_dir"
     moved_to="$new_session_dir"
     if ! mv "$source_session_dir" "$new_session_dir" 2>/dev/null; then
-      if cp -a "$source_session_dir/." "$new_session_dir/" 2>/dev/null && rm -rf "$source_session_dir"; then
+      # N2 hardening: cp + diff -r verification before rm catches
+      # truncated content, symlink mismatch, or partial copies.
+      if cp -a "$source_session_dir/." "$new_session_dir/" 2>/dev/null \
+         && diff -r "$source_session_dir" "$new_session_dir" >/dev/null 2>&1 \
+         && rm -rf "$source_session_dir"; then
         :
       else
-        printf '[qqq] failed to migrate session dir into worktree. rolling back.\n' >&2
+        printf '[qqq] failed to migrate session dir into worktree (cp/diff/rm). rolling back.\n' >&2
         rollback_worktree_create "$leader_repo" "$wt_path" "$branch" "$created_wt" "$created_branch" "$moved_from" "$moved_to"
         return 1
       fi
@@ -2950,11 +3025,23 @@ qqq_bootstrap_session_worktree() {
     fi
   fi
 
+  # Persist worktree facts into session.json (Stage 1 schema). Used by
+  # action_worktree_merge (Stage 6) and the picker preview (Stage 4).
+  # session.json travelled along with the rest of the session via mv/cp above.
+  if qqq_session_state_exists "$new_session_dir"; then
+    if ! qqq_session_state_set_field "$new_session_dir" base_branch "$base_ref" \
+       || ! qqq_session_state_set_field "$new_session_dir" worktree_path "$wt_path"; then
+      printf '[qqq] failed to persist worktree fields in session.json. rolling back.\n' >&2
+      rollback_worktree_create "$leader_repo" "$wt_path" "$branch" "$created_wt" "$created_branch" "$moved_from" "$moved_to"
+      return 1
+    fi
+  fi
+
   qqq_release_repo_lock
   repo_lock_held=no
   trap - RETURN
 
-  printf '[qqq] worktree ready: %s (branch %s)\n' "$wt_path" "$branch" >&2
+  printf '[qqq] worktree ready: %s (branch %s, base %s)\n' "$wt_path" "$branch" "$base_ref" >&2
   printf '[qqq] session dir ready: %s\n' "$new_session_dir" >&2
   printf '%s' "$new_session_dir"
 }
@@ -2962,17 +3049,41 @@ qqq_bootstrap_session_worktree() {
 # Emits the new session_dir on stdout; status/info goes to stderr.
 action_worktree_create() {
   local session_dir="$1"
+
+  # Reject: session is already in a live worktree.
+  local _wt_root
+  _wt_root=$(qqq_session_dir_worktree "$session_dir")
+  if [[ -n "$_wt_root" ]]; then
+    printf '[qqq] session already lives in a worktree: %s\n' "$_wt_root" >&2
+    return 1
+  fi
+
+  # Resolve base branch via Stage 3 prompt (or QQQ_CLI_BASE_BRANCH override).
+  local leader_repo dev_branch base_branch
+  leader_repo=$(qqq_leader_repo_from "$session_dir" 2>/dev/null) \
+    || leader_repo=$(qqq_leader_repo_from "$PWD" 2>/dev/null) \
+    || { printf '[qqq] not in a git repo.\n' >&2; return 1; }
+  dev_branch=$(qqq_origin_dev_branch)
+  base_branch=$(qqq_prompt_base_branch "$dev_branch" "$leader_repo") || {
+    printf '[qqq] worktree-create cancelled.\n' >&2
+    return 1
+  }
+
   qqq_log_workflow_event "worktree_create" "started" "" "$session_dir" \
     "schema_version" "$QQQ_LOG_SCHEMA_VERSION" \
-    "source_session_dir" "$session_dir"
+    "source_session_dir" "$session_dir" \
+    "base_branch" "$base_branch"
   local new_session_dir
-  new_session_dir=$(qqq_bootstrap_session_worktree "$(basename "$session_dir")" "$session_dir") || {
+  new_session_dir=$(qqq_bootstrap_session_worktree \
+    "$(basename "$session_dir")" "$session_dir" "$base_branch") || {
     qqq_log_workflow_event "worktree_create" "error" "" "$session_dir" \
-      "schema_version" "$QQQ_LOG_SCHEMA_VERSION"
+      "schema_version" "$QQQ_LOG_SCHEMA_VERSION" \
+      "base_branch" "$base_branch"
     return 1
   }
   qqq_log_workflow_event "worktree_create" "completed" "" "$new_session_dir" \
-    "schema_version" "$QQQ_LOG_SCHEMA_VERSION"
+    "schema_version" "$QQQ_LOG_SCHEMA_VERSION" \
+    "base_branch" "$base_branch"
   printf '%s' "$new_session_dir"
 }
 
@@ -3030,7 +3141,7 @@ action_resolve_rebase_conflict() {
   status_line=$(qqq_session_worktree_status "$session_dir" "$leader_repo")
   wt_path="${status_line%$'\t'*}"
   wt_state="${status_line##*$'\t'}"
-  dev_branch=$(qqq_origin_dev_branch)
+  dev_branch=$(qqq_session_dev_branch "$session_dir")
 
   if [[ "$wt_state" != "live" ]]; then
     printf '[qqq] cannot resolve conflicts: worktree state is %s.\n' "$wt_state" >&2
@@ -3294,7 +3405,7 @@ action_worktree_merge() {
   wt_state="${status_line##*$'\t'}"
   slug=$(qqq_slug_from_session_dir "$session_dir")
   branch=$(qqq_worktree_branch_for "$slug")
-  dev_branch=$(qqq_origin_dev_branch)
+  dev_branch=$(qqq_session_dev_branch "$session_dir")
   session_basename=$(basename "$session_dir")
   premerge_tag="qqq-premerge/$slug"
   state_path=$(qqq_merge_state_path "$session_dir")
@@ -3991,6 +4102,22 @@ main() {
         ;;
         worktree-open)
           action_worktree_open "$session"
+          ;;
+        worktree-create)
+          local created_session create_rc
+          created_session=$(action_worktree_create "$session")
+          create_rc=$?
+          if [[ -n "$created_session" && "$created_session" != "$session" && -d "$created_session" ]]; then
+            release_session_lock
+            if acquire_lock "$created_session"; then
+              session="$created_session"
+            else
+              session=""
+              picker_required=1
+              break
+            fi
+          fi
+          (( create_rc == 0 )) || continue
           ;;
         worktree-merge)
           local merged_session merge_rc
