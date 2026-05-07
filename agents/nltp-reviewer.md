@@ -6,7 +6,7 @@ effort: high
 background: false
 permissionMode: default
 color: yellow
-tools: Read, Grep, Glob, Bash, Write
+tools: Read, Grep, Glob, Bash, Write, TaskCreate, TaskGet, TaskList, TaskUpdate, TodoWrite
 disallowedTools: Edit, NotebookEdit, Task
 skills:
   - qqq:nltp-review

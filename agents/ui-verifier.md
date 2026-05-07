@@ -6,7 +6,7 @@ effort: high
 background: false
 permissionMode: default
 color: green
-tools: Bash, Read, Grep, Glob, Write, Edit, AskUserQuestion
+tools: Bash, Read, Grep, Glob, Write, Edit, AskUserQuestion, TaskCreate, TaskGet, TaskList, TaskUpdate, TodoWrite
 disallowedTools: NotebookEdit
 skills:
   - playwright-cli

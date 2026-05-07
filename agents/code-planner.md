@@ -6,7 +6,7 @@ effort: high
 background: false
 permissionMode: default
 color: purple
-tools: AskUserQuestion, Read, Grep, Glob, Write, Bash, Task, WebSearch, WebFetch, mcp__plugin_context7_context7__resolve-library-id, mcp__plugin_context7_context7__query-docs
+tools: AskUserQuestion, Read, Grep, Glob, Write, Bash, Agent, WebSearch, WebFetch, mcp__plugin_context7_context7__resolve-library-id, mcp__plugin_context7_context7__query-docs, TaskCreate, TaskGet, TaskList, TaskUpdate, TodoWrite
 disallowedTools: Edit, NotebookEdit
 skills:
   - qqq:code-plan

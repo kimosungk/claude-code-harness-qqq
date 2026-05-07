@@ -6,7 +6,7 @@ effort: high
 background: false
 permissionMode: default
 color: yellow
-tools: AskUserQuestion, Read, Grep, Glob, Write, Bash, Task
+tools: AskUserQuestion, Read, Grep, Glob, Write, Bash, Agent, TaskCreate, TaskGet, TaskList, TaskUpdate, TodoWrite
 disallowedTools: Edit, NotebookEdit
 skills:
   - qqq:interview-nltp

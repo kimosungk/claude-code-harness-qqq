@@ -6,7 +6,7 @@ effort: high
 background: false
 permissionMode: default
 color: pink
-tools: AskUserQuestion, Read, Grep, Glob, Write, Bash
+tools: AskUserQuestion, Read, Grep, Glob, Write, Bash, TaskCreate, TaskGet, TaskList, TaskUpdate, TodoWrite
 disallowedTools: Edit, NotebookEdit
 skills:
   - qqq:clarify-requirement

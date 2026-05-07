@@ -6,7 +6,7 @@ effort: high
 background: false
 permissionMode: default
 color: orange
-tools: Read, Grep, Glob, Write, Edit, Bash, Task
+tools: Read, Grep, Glob, Write, Edit, Bash, Agent, TaskCreate, TaskGet, TaskList, TaskUpdate, TodoWrite
 disallowedTools: NotebookEdit
 skills:
   - qqq:code-implement

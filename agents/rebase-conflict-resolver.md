@@ -6,7 +6,7 @@ effort: high
 background: false
 permissionMode: default
 color: red
-tools: Read, Grep, Glob, Bash, Write, Edit
+tools: Read, Grep, Glob, Bash, Write, Edit, TaskCreate, TaskGet, TaskList, TaskUpdate, TodoWrite
 disallowedTools: NotebookEdit, Task
 skills:
   - qqq:rebase-conflict-resolve

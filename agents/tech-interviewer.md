@@ -6,7 +6,7 @@ effort: xhigh
 background: false
 permissionMode: default
 color: orange
-tools: AskUserQuestion, Read, Grep, Glob, Write, Edit, Bash, WebSearch, WebFetch, mcp__plugin_context7_context7__resolve-library-id, mcp__plugin_context7_context7__query-docs
+tools: AskUserQuestion, Read, Grep, Glob, Write, Edit, Bash, WebSearch, WebFetch, mcp__plugin_context7_context7__resolve-library-id, mcp__plugin_context7_context7__query-docs, TaskCreate, TaskGet, TaskList, TaskUpdate, TodoWrite
 disallowedTools: NotebookEdit
 skills:
   - qqq:interview-tech
