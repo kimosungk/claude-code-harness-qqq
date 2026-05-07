@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Rebase Conflict Resolution Output",
+  "description": "Structured Codex output for one rebase conflict resolution attempt. Engine, mode, and round metadata are added by the persist step.",
+  "type": "object",
+  "required": [
+    "status",
+    "summary",
+    "resolved_files",
+    "remaining_conflicts",
+    "commands_run",
+    "tests_run",
+    "notes"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "status": {
+      "enum": ["RESOLVED", "BLOCKED", "FAILED"],
+      "description": "RESOLVED = the rebase advanced past all conflicts in this round. BLOCKED = conflicts cannot be safely resolved without further input or scope change. FAILED = an attempted resolution itself failed (e.g., merge introduced a compile/test error)."
+    },
+    "summary": {
+      "type": "string",
+      "description": "One short paragraph describing what was done and why."
+    },
+    "resolved_files": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Paths staged with git add as part of this resolution. Empty when status is not RESOLVED."
+    },
+    "remaining_conflicts": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Files still in conflict state. Empty when status == RESOLVED."
+    },
+    "commands_run": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Shell commands executed during resolution, one per array entry."
+    },
+    "tests_run": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["command", "result"],
+        "additionalProperties": false,
+        "properties": {
+          "command": { "type": "string" },
+          "result": {
+            "enum": ["pass", "fail", "skipped", "n/a"],
+            "description": "Outcome of the verification step. Use n/a when the command does not have a pass/fail nature (e.g., status inspection)."
+          }
+        }
+      },
+      "description": "Verification commands the resolver ran after staging. Empty array when no tests ran."
+    },
+    "notes": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Free-form one-line notes about decisions, residual risks, or follow-up items."
+    }
+  }
+}

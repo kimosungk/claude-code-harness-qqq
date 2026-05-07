@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Phase 3 Implementation Review Verdict",
+  "description": "Structured Codex output for one phase-3 review round. Engine, mode, and round metadata are added by the persist step, not by Codex.",
+  "type": "object",
+  "required": ["verdict", "lanes", "issues"],
+  "additionalProperties": false,
+  "properties": {
+    "verdict": { "enum": ["OKAY", "REJECT"] },
+    "lanes": {
+      "type": "object",
+      "required": [
+        "architecture",
+        "correctness_and_testability",
+        "security",
+        "maintainability"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "architecture": { "$ref": "#/$defs/lane" },
+        "correctness_and_testability": { "$ref": "#/$defs/lane" },
+        "security": { "$ref": "#/$defs/lane" },
+        "maintainability": { "$ref": "#/$defs/lane" }
+      }
+    },
+    "issues": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/issue" },
+      "description": "Empty array when verdict is OKAY."
+    }
+  },
+  "$defs": {
+    "lane": {
+      "type": "object",
+      "required": ["status", "reason"],
+      "additionalProperties": false,
+      "properties": {
+        "status": { "enum": ["Pass", "Fail"] },
+        "reason": {
+          "type": "string",
+          "description": "One-line rationale anchored to the diff."
+        }
+      }
+    },
+    "issue": {
+      "type": "object",
+      "required": ["severity", "location", "description", "fix"],
+      "additionalProperties": false,
+      "properties": {
+        "severity": { "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW"] },
+        "location": {
+          "type": "string",
+          "description": "file:line, file:line-line, or bare file path."
+        },
+        "description": { "type": "string" },
+        "fix": { "type": "string" }
+      }
+    }
+  }
+}

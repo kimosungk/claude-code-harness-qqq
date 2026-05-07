@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Phase 2 Gate 1 (Explorer) Verdict",
+  "description": "Structured Codex output for one phase-2 explorer round. Engine, mode, round, plan fingerprint, and invalidated-by metadata are added by the persist step. Section bodies are markdown strings rendered verbatim under their respective headers.",
+  "type": "object",
+  "required": ["verdict", "blocking_reasons", "next_action", "sections"],
+  "additionalProperties": false,
+  "properties": {
+    "verdict": { "enum": ["OKAY", "REJECT"] },
+    "blocking_reasons": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "One-line blockers keyed to file:line or exact file path. Empty when verdict is OKAY."
+    },
+    "next_action": {
+      "type": "string",
+      "description": "One-line planner action."
+    },
+    "sections": {
+      "type": "object",
+      "required": [
+        "premise_check",
+        "tech_spec_consistency",
+        "reuse_candidates",
+        "impact_caller_map",
+        "known_pitfalls",
+        "nltp_coverage",
+        "evidence"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "premise_check": {
+          "type": "string",
+          "description": "Markdown body for ## Premise Check."
+        },
+        "tech_spec_consistency": {
+          "type": ["string", "null"],
+          "description": "Markdown body for ## Tech Spec Consistency. null when phase1-tech-spec.md is absent."
+        },
+        "reuse_candidates": {
+          "type": "string",
+          "description": "Markdown body for ## Reuse Candidates."
+        },
+        "impact_caller_map": {
+          "type": "string",
+          "description": "Markdown body for ## Impact Caller Map."
+        },
+        "known_pitfalls": {
+          "type": "string",
+          "description": "Markdown body for ## Known Pitfalls."
+        },
+        "nltp_coverage": {
+          "type": ["string", "null"],
+          "description": "Markdown body for ## NLTP Coverage. null when phase1-nltp.md is absent."
+        },
+        "evidence": {
+          "type": "string",
+          "description": "Markdown body for ## Evidence — key file:line anchors."
+        }
+      }
+    }
+  }
+}

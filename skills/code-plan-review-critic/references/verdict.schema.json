@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Phase 2 Gate 3 (Critic) Verdict",
+  "description": "Structured Codex output for one phase-2 critic round. Engine, mode, round, plan fingerprint, and invalidated-by metadata are added by the persist step. Section bodies are markdown strings rendered verbatim under their respective headers.",
+  "type": "object",
+  "required": ["verdict", "blocking_reasons", "next_action", "sections"],
+  "additionalProperties": false,
+  "properties": {
+    "verdict": { "enum": ["OKAY", "REJECT"] },
+    "blocking_reasons": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "One-line blockers keyed to file:line or exact file path. Use the literal token ARCH_RECHECK as a reason value when architecture is the root cause and a same-round Gate 2 re-entry is needed. Empty when verdict is OKAY."
+    },
+    "next_action": {
+      "type": "string",
+      "description": "One-line planner action."
+    },
+    "sections": {
+      "type": "object",
+      "required": [
+        "premortem_risks",
+        "rollback_and_observability",
+        "scope_drift_check",
+        "simulated_steps",
+        "evidence"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "premortem_risks": {
+          "type": "string",
+          "description": "Markdown body for ## Premortem Risks."
+        },
+        "rollback_and_observability": {
+          "type": "string",
+          "description": "Markdown body for ## Rollback and Observability."
+        },
+        "scope_drift_check": {
+          "type": "string",
+          "description": "Markdown body for ## Scope Drift Check."
+        },
+        "simulated_steps": {
+          "type": "string",
+          "description": "Markdown body for ## Simulated Steps."
+        },
+        "evidence": {
+          "type": "string",
+          "description": "Markdown body for ## Evidence — key file:line anchors."
+        }
+      }
+    }
+  }
+}

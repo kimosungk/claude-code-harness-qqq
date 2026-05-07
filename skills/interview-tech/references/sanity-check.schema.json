@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Tech-Spec Sanity Check Output",
+  "description": "Mechanical consistency check of phase1-tech-spec.md against frozen phase1-spec.md (and optional phase1-ui-outline.md / phase1-nltp.md). Advisory only — never blocks freeze. Categories are deliberately narrow to prevent drift into subjective architectural judgment.",
+  "type": "object",
+  "required": ["outcome", "findings"],
+  "additionalProperties": false,
+  "properties": {
+    "outcome": {
+      "enum": ["clean", "findings_present"],
+      "description": "clean = no findings. findings_present = at least one finding listed."
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["category", "tech_spec_location", "finding", "severity"],
+        "additionalProperties": false,
+        "properties": {
+          "category": {
+            "enum": ["spec_consistency", "evidence_gap", "nltp_coverage"],
+            "description": "spec_consistency = a decision in phase1-tech-spec.md contradicts the frozen phase1-spec.md (or phase1-ui-outline.md when present) without an Amendment Gate row in §7. evidence_gap = a locked decision in §3/§5/§6 is missing its evidence row or rationale. nltp_coverage = a scenario in phase1-nltp.md (when present) is not covered by the tech-spec's verification path."
+          },
+          "tech_spec_location": {
+            "type": "string",
+            "description": "Specific anchor in phase1-tech-spec.md (e.g., '§3 row 2', '§5 — Database', '§7'). Bare section number is acceptable when row is not applicable."
+          },
+          "finding": {
+            "type": "string",
+            "description": "One-line mechanical observation. No subjective evaluation. No suggestions about whether the underlying decision is good or bad — only whether it is internally consistent and evidenced."
+          },
+          "severity": {
+            "enum": ["info", "warn"],
+            "description": "info = consistency observation worth noting. warn = likely silent spec violation or substantive evidence gap. There is no 'block' severity — this check never blocks freeze."
+          }
+        }
+      },
+      "description": "Empty array when outcome is 'clean'."
+    }
+  }
+}

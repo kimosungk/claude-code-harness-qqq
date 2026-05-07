@@ -1,0 +1,8 @@
+{
+  "name": "qqq",
+  "description": "Lightweight three-phase development harness with GitLab worktree workflow: Socratic requirement clarification -> UI outline -> reviewed code plan -> reviewed implementation. Ships with an fzf+tmux workflow (scripts/qqq-workflow.sh) plus a project-local hooks companion pack for artifact protection, session logging, compact reminders, stop guards, and notifications.",
+  "version": "2.0.0",
+  "author": {
+    "name": "hskim"
+  }
+}
