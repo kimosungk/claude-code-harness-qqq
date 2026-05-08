@@ -738,7 +738,7 @@ test_rewind_warning_lists_only_managed_agent_windows() {
 }
 
 test_rebase_conflict_preflight_uses_same_duplicate_rules() {
-  local setup tmp repo remote session wt_path git_dir launch_log win_slug target_win old_path old_tmux_session
+  local setup tmp repo remote session_name session wt_path git_dir launch_log win_slug target_win old_path old_tmux_session
   local prompt_queue latest_index active_index same_role_count log_path
   setup=$(setup_repo_with_dev)
   IFS=$'\t' read -r tmp repo remote <<<"$setup"
@@ -747,8 +747,18 @@ test_rebase_conflict_preflight_uses_same_duplicate_rules() {
   trap 'PATH="$old_path"; TMUX_SESSION_NAME="$old_tmux_session"; teardown_tmux_test_env; rm -rf "$tmp"' RETURN
   configure_workspace_vars "$repo"
 
-  session=$(make_bootstrapped_session "$repo" "rebase-preflight")
+  # Rebase preflight is a worktree-mode action — the conflict simulation
+  # below writes .git/rebase-merge into the worktree's git-dir, which
+  # only exists once the session has been promoted out of leader mode.
+  # make_bootstrapped_session creates a leader-mode session, so qqq_session_
+  # dir_worktree returns empty and `git -C "" rev-parse --git-dir` resolves
+  # to the test runner's own .git, then `mkdir -p /.git/rebase-merge`
+  # fails with permission denied. Use qqq_bootstrap_session_worktree
+  # directly instead (same pattern as test_worktree_merge_archives_bootstrapped_session).
+  session_name="$(date +%Y-%m-%d)_rebase-preflight"
+  session=$(cd "$repo" && qqq_bootstrap_session_worktree "$session_name")
   wt_path=$(qqq_session_dir_worktree "$session")
+  [[ -n "$wt_path" ]] || fail "rebase preflight test requires a worktree-mode session (wt_path empty)"
   git_dir=$("$REAL_GIT" -C "$wt_path" rev-parse --git-dir)
   [[ "$git_dir" = /* ]] || git_dir="$wt_path/$git_dir"
   mkdir -p "$git_dir/rebase-merge"
