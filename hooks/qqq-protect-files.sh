@@ -75,8 +75,12 @@ matches_any_agent() {
 }
 
 phase_artifact_owner() {
-  local base="$1"
+  local base="$1" rel="${2:-}"
   case "$base" in
+    # Phase 0 / launcher-owned artifacts
+    phase0-issue.md)
+      printf 'qqq-launcher\n'
+      ;;
     # Phase 1 artifacts
     phase1-spec.md)
       printf 'req-clarifier\n'
@@ -120,6 +124,16 @@ phase_artifact_owner() {
     rebase-conflict-*.md|rebase-conflict-*.json)
       printf 'rebase-conflict-resolver\n'
       ;;
+    # Session metadata is launcher-owned, but only when the path matches
+    # the canonical location (.qqq/session.json). A loose basename match
+    # would over-trigger on incidental files named session.json elsewhere.
+    session.json)
+      if [[ "$rel" == */.qqq/session.json ]]; then
+        printf 'qqq-launcher\n'
+      else
+        printf '\n'
+      fi
+      ;;
     *)
       printf '\n'
       ;;
@@ -145,19 +159,11 @@ rel_path=$(relative_to_project "$abs_path")
 base_name=$(basename "$rel_path")
 
 # ── Runtime-owned files ────────────────────────────────────────────────────
+# .qqq.lock is created/removed by the workflow shell (flock/atomic-rename),
+# never via Claude's Write/Edit. Keep it as a hard block — there is no
+# "qqq-launcher" Claude path that should ever touch it.
 if [[ "$base_name" == ".qqq.lock" ]]; then
   block ".qqq.lock is runtime-owned and may not be edited by Claude"
-fi
-
-# ── Launcher-owned files (Phase 0 + session metadata) ─────────────────────
-# phase0-issue.md is written by `qqq register-issue` (shell action, no agent).
-# .qqq/session.json is written by create_new_session / worktree-create / merge.
-# Phase agents may *read* these but never edit them — protect against drift.
-if [[ "$base_name" == "phase0-issue.md" ]]; then
-  block "phase0-issue.md is owned by qqq-launcher (run register-issue to update) — agents must not edit it"
-fi
-if [[ "$base_name" == "session.json" && "$rel_path" == */.qqq/session.json ]]; then
-  block ".qqq/session.json is owned by qqq-launcher (worktree-create / merge) — agents must not edit it"
 fi
 
 # ── Completed archive is frozen ────────────────────────────────────────────
@@ -179,7 +185,22 @@ if [[ "$base_name" == "phase1-tech-spec.md" && -f "$abs_path" ]]; then
 fi
 
 # ── Phase artifact ownership checks ───────────────────────────────────────
-artifact_owner=$(phase_artifact_owner "$base_name")
+# phase_artifact_owner takes both the basename and the relative path so it
+# can disambiguate basename collisions (e.g. session.json must live under
+# .qqq/ to count as launcher-owned).
+artifact_owner=$(phase_artifact_owner "$base_name" "$rel_path")
+
+if [[ "$artifact_owner" == "qqq-launcher" ]]; then
+  # Launcher-owned artifacts (phase0-issue.md, .qqq/session.json) are
+  # written by shell actions in scripts/qqq-workflow.sh, never by Claude.
+  # Allow only when the caller explicitly identifies as the launcher
+  # (QQQ_AGENT=qqq-launcher); empty/main-session is treated as "not the
+  # launcher" so a vanilla Claude session cannot mutate these files.
+  if [[ "$agent_type" == "qqq-launcher" ]]; then
+    exit 0
+  fi
+  block "$rel_path is owned by qqq-launcher (workflow shell action) — current agent: ${agent_type:-main-session}"
+fi
 
 if [[ "$artifact_owner" == "req-clarifier" ]]; then
   # phase1-spec.md is primarily owned by req-clarifier, but tech-interviewer

@@ -48,10 +48,13 @@ Managed event groups:
 
 ### `qqq-protect-files.sh`
 
-- Blocks edits to `.qqq.lock`
+- Blocks edits to `.qqq.lock` (runtime-owned by the workflow shell, never written via Claude)
 - Blocks edits under `claude-works-completed/**`
-- Enforces artifact ownership by phase agent
-- Resolves active agent from hook payload first, then falls back to `QQQ_AGENT`
+- Enforces artifact ownership through a single table (`phase_artifact_owner`):
+  - Phase agents own their phase artifacts (e.g. `code-planner` owns `phase2-code-plan.md`)
+  - Launcher-owned artifacts (`phase0-issue.md`, `.qqq/session.json`) require an explicit `QQQ_AGENT=qqq-launcher` marker; main-session Claude is blocked by default. The workflow's shell-side writers do not need this marker because they bypass Claude's Write/Edit pipeline entirely.
+  - `.qqq/session.json` is launcher-owned only when the path matches the canonical `*/.qqq/session.json` shape — incidental basename matches elsewhere are warned-only.
+- Resolves active agent from hook payload first (`agent_type` / `subagent_type` / `task.*`), then falls back to `QQQ_AGENT`
 
 ### `qqq-log-event.sh`
 
