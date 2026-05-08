@@ -195,11 +195,64 @@ test_force_preview_and_archive_block() {
   rm -rf "$tmp"
 }
 
+# D.1 — empirically verify the PR3 deny list (Item 1 in commit e01f88c).
+# Asserts the contract every contributor must preserve: a single source of
+# truth, the high-blast-radius positive set, and the intentional exclusions
+# that keep ui-verifier (curl / kill / rm -f) functional under bypass mode.
+test_pr3_deny_list_contract() {
+  local deny
+  deny=$(qqq_disallowed_tools)
+
+  # Positive: the 10 entries codex / PR3 commit message both pin down.
+  local entry
+  for entry in \
+    'NotebookEdit' \
+    'Bash(git push *)' \
+    'Bash(git reset --hard *)' \
+    'Bash(git clean *)' \
+    'Bash(git branch -D *)' \
+    'Bash(git worktree remove *)' \
+    'Bash(rm -rf *)' \
+    'Bash(sudo *)' \
+    'Bash(chown *)' \
+    'Bash(chmod -R *)'; do
+    assert_contains "$deny" "$entry" "deny list missing required entry"
+  done
+
+  # Negative: ui-verifier needs these to clean up its dev server. If any
+  # appear here, the agent will be unable to tear down localhost listeners.
+  # Note `rm -rf *` is a substring of `rm -f *`, so check for the standalone
+  # `rm -f ` token (no trailing -r) by looking for ",Bash(rm -f " or "(rm -f ".
+  if [[ "$deny" == *'Bash(rm -f '* && "$deny" != *'Bash(rm -rf '* ]]; then
+    fail "deny list must not include rm -f without -r (would block ui-verifier dev-server cleanup)"
+  fi
+  if [[ "$deny" == *'Bash(curl'* ]]; then
+    fail "deny list must not include curl (ui-verifier hits localhost via curl)"
+  fi
+  if [[ "$deny" == *'Bash(kill'* ]]; then
+    fail "deny list must not include kill (ui-verifier reaps its dev server pid)"
+  fi
+
+  # DRY: action-handlers.sh defines the function once and references it
+  # from exactly two call sites (run_agent + launch_rebase_conflict_
+  # resolver). Verify the structural shape, not raw mention count
+  # (comments mentioning the symbol would skew a naive grep -c).
+  local handlers="$ROOT/scripts/lib/action-handlers.sh"
+  local defs uses
+  defs=$(grep -c '^qqq_disallowed_tools()' "$handlers" || true)
+  # Match the assignment pattern, not bare mentions (the function's own doc
+  # comment references $(qqq_disallowed_tools) literally).
+  uses=$(grep -cE '^[[:space:]]+[a-z_]+=\$\(qqq_disallowed_tools\)' "$handlers" || true)
+  assert_eq "$defs" "1" "qqq_disallowed_tools must be defined exactly once in action-handlers.sh"
+  assert_eq "$uses" "2" "qqq_disallowed_tools must be assigned from exactly 2 sites (run_agent + launch_rebase_conflict_resolver)"
+}
+
 main() {
   test_leader_session_discard
   test_worktree_discard_keep_remote
   test_worktree_discard_delete_remote
   test_force_preview_and_archive_block
+  test_pr3_deny_list_contract
   printf 'ok\n'
 }
 
