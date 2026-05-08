@@ -125,8 +125,9 @@ merge_settings() {
     | .hooks.TaskCreated = merge_event($root; "TaskCreated"; ""; ".claude/hooks/qqq-log-event.sh")
     | .hooks.TaskCompleted = merge_event($root; "TaskCompleted"; ""; ".claude/hooks/qqq-log-event.sh")
     | .hooks.Notification = merge_event($root; "Notification"; "permission_prompt|idle_prompt|elicitation_dialog"; ".claude/hooks/qqq-notify.sh")
-    | .hooks.SessionStart = merge_event($root; "SessionStart"; "compact"; ".claude/hooks/qqq-context.sh")
+    | .hooks.SessionStart = merge_event($root; "SessionStart"; "startup|resume|compact"; ".claude/hooks/qqq-context.sh")
     | .hooks.Stop = merge_event($root; "Stop"; ""; ".claude/hooks/qqq-stop-guard.sh")
+    | .hooks.SubagentStop = merge_event($root; "SubagentStop"; ""; ".claude/hooks/qqq-stop-guard.sh")
   ' "$settings_path" >"$tmp_path"
 }
 
@@ -149,8 +150,9 @@ print_summary() {
       {event:"TaskCreated", matcher:"", command:".claude/hooks/qqq-log-event.sh"},
       {event:"TaskCompleted", matcher:"", command:".claude/hooks/qqq-log-event.sh"},
       {event:"Notification", matcher:"permission_prompt|idle_prompt|elicitation_dialog", command:".claude/hooks/qqq-notify.sh"},
-      {event:"SessionStart", matcher:"compact", command:".claude/hooks/qqq-context.sh"},
-      {event:"Stop", matcher:"", command:".claude/hooks/qqq-stop-guard.sh"}
+      {event:"SessionStart", matcher:"startup|resume|compact", command:".claude/hooks/qqq-context.sh"},
+      {event:"Stop", matcher:"", command:".claude/hooks/qqq-stop-guard.sh"},
+      {event:"SubagentStop", matcher:"", command:".claude/hooks/qqq-stop-guard.sh"}
     ]
     | .[]
     | "- " + .event

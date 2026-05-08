@@ -107,8 +107,8 @@ bash scripts/validate-qqq-hooks.sh <project_root>
 |---|---|---|
 | `qqq-protect-files.sh` | `PreToolUse` (Edit/Write) | Blocks edits to `.qqq.lock`, frozen `claude-works-completed/`, and out-of-ownership artifacts |
 | `qqq-log-event.sh` | `TaskCreated` / `TaskCompleted` | Append JSONL records to `.qqq/log.jsonl` |
-| `qqq-context.sh` | `SessionStart` (compact) | Reminds Claude about frozen artifacts, ownership, next expected output |
-| `qqq-stop-guard.sh` | `Stop` | Blocks phase agents from terminating before required artifacts exist |
+| `qqq-context.sh` | `SessionStart` (startup\|resume\|compact) | Reminds Claude about frozen artifacts, ownership, next expected output |
+| `qqq-stop-guard.sh` | `Stop` / `SubagentStop` | Blocks phase agents and reviewer subagents from terminating before required artifacts exist |
 | `qqq-notify.sh` | `Notification` | OS-native passive notifications (macOS / Linux / Windows) |
 
 See `qqq-hooks-companion-pack.md` for the full hooks contract.

@@ -75,6 +75,38 @@ case "$agent_type" in
       missing+=('phase3-*-review-*.md')
     fi
     ;;
+  # ── Reviewer subagents (SubagentStop event) ─────────────────────────────
+  # Defense-in-depth only: parents (planner/implementer/nltp-interviewer)
+  # already verify per-round artifacts. The hook cannot match exact round
+  # numbers, so it only checks that *some* artifact of the expected shape
+  # exists. False negatives possible (round-2 fails after round-1 wrote);
+  # treat hook as a backstop, not a primary gate.
+  nltp-reviewer)
+    if ! compgen -G "$session_dir/phase1-nltp-review-*.md" >/dev/null; then
+      missing+=('phase1-nltp-review-*.md')
+    fi
+    ;;
+  code-plan-review-explorer)
+    if ! compgen -G "$session_dir/phase2-g1-explorer-*.md" >/dev/null; then
+      missing+=('phase2-g1-explorer-*.md')
+    fi
+    ;;
+  code-plan-review-architect)
+    if ! compgen -G "$session_dir/phase2-g2-architect-*.md" >/dev/null; then
+      missing+=('phase2-g2-architect-*.md')
+    fi
+    ;;
+  code-plan-review-critic)
+    if ! compgen -G "$session_dir/phase2-g3-critic-*.md" >/dev/null; then
+      missing+=('phase2-g3-critic-*.md')
+    fi
+    ;;
+  code-implement-reviewer)
+    if ! compgen -G "$session_dir/phase3-codex-review-*.md" >/dev/null \
+        && ! compgen -G "$session_dir/phase3-claude-review-*.md" >/dev/null; then
+      missing+=('phase3-codex-review-*.md or phase3-claude-review-*.md')
+    fi
+    ;;
 esac
 
 if (( ${#missing[@]} > 0 )); then

@@ -62,7 +62,7 @@ if [[ -f "$settings_path" ]] && jq . "$settings_path" >/dev/null 2>&1; then
         else
           empty
         end),
-        (["PreToolUse","TaskCreated","TaskCompleted","Notification","SessionStart","Stop"][] as $event
+        (["PreToolUse","TaskCreated","TaskCompleted","Notification","SessionStart","Stop","SubagentStop"][] as $event
           | if (.hooks[$event] // null) != null and (.hooks[$event] | type) != "array" then
               "hooks." + $event + " must be an array"
             else
@@ -85,8 +85,9 @@ if [[ -f "$settings_path" ]] && jq . "$settings_path" >/dev/null 2>&1; then
           {event:"TaskCreated", matcher:null, command:".claude/hooks/qqq-log-event.sh"},
           {event:"TaskCompleted", matcher:null, command:".claude/hooks/qqq-log-event.sh"},
           {event:"Notification", matcher:"permission_prompt|idle_prompt|elicitation_dialog", command:".claude/hooks/qqq-notify.sh"},
-          {event:"SessionStart", matcher:"compact", command:".claude/hooks/qqq-context.sh"},
-          {event:"Stop", matcher:null, command:".claude/hooks/qqq-stop-guard.sh"}
+          {event:"SessionStart", matcher:"startup|resume|compact", command:".claude/hooks/qqq-context.sh"},
+          {event:"Stop", matcher:null, command:".claude/hooks/qqq-stop-guard.sh"},
+          {event:"SubagentStop", matcher:null, command:".claude/hooks/qqq-stop-guard.sh"}
         ];
 
       def handlers_for($event):
@@ -123,7 +124,7 @@ if [[ -f "$settings_path" ]] && jq . "$settings_path" >/dev/null 2>&1; then
             | .command? // empty
             | select(is_qqq_command(.))
           ] | length) as $total
-          | if $total == 6 then empty else "unexpected total qqq-owned handler count: " + ($total | tostring) + " (expected 6)" end)
+          | if $total == 7 then empty else "unexpected total qqq-owned handler count: " + ($total | tostring) + " (expected 7)" end)
       ] | .[]' "$settings_path"
   )
   if (( ${#validation_failures[@]} > 0 )); then

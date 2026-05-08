@@ -40,8 +40,9 @@ Managed event groups:
 - `TaskCreated` -> `.claude/hooks/qqq-log-event.sh`
 - `TaskCompleted` -> `.claude/hooks/qqq-log-event.sh`
 - `Notification` with matcher `permission_prompt|idle_prompt|elicitation_dialog` -> `.claude/hooks/qqq-notify.sh`
-- `SessionStart` with matcher `compact` -> `.claude/hooks/qqq-context.sh`
+- `SessionStart` with matcher `startup|resume|compact` -> `.claude/hooks/qqq-context.sh`
 - `Stop` -> `.claude/hooks/qqq-stop-guard.sh`
+- `SubagentStop` -> `.claude/hooks/qqq-stop-guard.sh`
 
 ## Hook Behavior
 
@@ -77,15 +78,27 @@ Shared JSONL shape:
 
 ### `qqq-context.sh`
 
-- Runs on `SessionStart` matcher `compact`
+- Runs on `SessionStart` matcher `startup|resume|compact`
 - Prints a short reminder about frozen artifacts, ownership, and the next expected artifact
+- Early-exits when neither `$QQQ_SESSION_DIR` nor a session-shaped cwd is detected, so it is safe to widen beyond `compact`
 
 ### `qqq-stop-guard.sh`
 
 - Allows immediately when `stop_hook_active=true`
 - Uses payload `agent_type` before env fallback
-- Blocks `code-planner` if `phase2-code-plan.md` or `phase2-review-log.md` is missing
-- Blocks `code-implementer` if `phase3-implement-log.md` or any `phase3-*-review-*.md` is missing
+- Runs on both `Stop` (top-level agent) and `SubagentStop` (Task-spawned reviewers)
+- Phase agents (Stop):
+  - `req-clarifier` requires `phase1-spec.md`
+  - `tech-interviewer` requires `phase1-tech-spec.md`
+  - `nltp-interviewer` requires `phase1-nltp.md` + at least one `phase1-nltp-review-*.md`
+  - `code-planner` requires `phase2-code-plan.md` + `phase2-review-log.md`
+  - `code-implementer` requires `phase3-implement-log.md` + at least one `phase3-*-review-*.md`
+- Reviewer subagents (SubagentStop, defense-in-depth — round-number matching is wildcard, false negatives possible):
+  - `nltp-reviewer` requires at least one `phase1-nltp-review-*.md`
+  - `code-plan-review-explorer` requires `phase2-g1-explorer-*.md`
+  - `code-plan-review-architect` requires `phase2-g2-architect-*.md`
+  - `code-plan-review-critic` requires `phase2-g3-critic-*.md`
+  - `code-implement-reviewer` requires `phase3-codex-review-*.md` or `phase3-claude-review-*.md`
 
 ### `qqq-notify.sh`
 
