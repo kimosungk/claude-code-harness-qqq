@@ -3,11 +3,13 @@
 A Claude Code plugin that turns vague requests into reviewed, verified implementations. Each phase has a clear deliverable, a Socratic loop with the user, and a self-managed reviewer pass before moving forward.
 
 ```
-Phase 1 → Phase 2 → Phase 3
-clarify    plan       implement
+[Phase 0] → Phase 1 → Phase 2 → Phase 3
+register     clarify    plan       implement
+issue
+(optional)
 ```
 
-Phase 1 produces an approved spec (and optional UI outline / NLTP). Phase 2 produces a reviewed code plan. Phase 3 executes the plan and reviews the diff. Each phase blocks on its own review loop, so nothing moves forward unreviewed.
+Phase 0 (optional, workflow-action only) registers a GitLab issue as `phase0-issue.md` so Phase 1 starts with shared context. Phase 1 produces an approved spec (and optional UI outline / NLTP). Phase 2 produces a reviewed code plan. Phase 3 executes the plan and reviews the diff. Each phase blocks on its own review loop, so nothing moves forward unreviewed.
 
 ## Install
 
@@ -58,6 +60,12 @@ bash scripts/validate-qqq-hooks.sh <project_root>
 ## What's inside
 
 13 agents under `agents/`, 14 skills under `skills/`, 5 hooks under `hooks/`, 5 scripts under `scripts/`, plus the fzf+tmux workflow tool.
+
+### Phase 0 — Register Issue (optional, workflow-action only)
+
+| Component | Purpose |
+|---|---|
+| `qqq register-issue` (workflow action, `scripts/qqq-workflow.sh`) | Pick or paste a GitLab issue and snapshot it as `phase0-issue.md`. Auto-injected into `req-clarifier` via `--append-system-prompt-file` so Phase 1 starts with shared context. Owned by the launcher (shell), not an agent — `phase0-issue.md` is read-only to all phase agents. |
 
 ### Phase 1 — Clarify
 

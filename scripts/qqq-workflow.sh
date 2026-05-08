@@ -40,7 +40,7 @@ export LC_ALL="${LC_ALL:-C.UTF-8}"
 # The separator is "|" (not ":"): tmux parses -t target as "session:window.pane",
 # so a colon inside the session name breaks every target lookup.
 export TMUX_SESSION_NAME=""
-readonly DEFAULT_ITERATIONS=1
+readonly DEFAULT_ITERATIONS=3
 readonly QQQ_LOG_SCHEMA_VERSION="1"
 
 QQQ_WORKS_DIR="${QQQ_WORKS_DIR:-$PWD/claude-works}"
