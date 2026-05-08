@@ -4,11 +4,16 @@ Read this before the first review attempt.
 
 ## Inputs
 
-- Argument is the absolute path to `phase2-code-plan.md`
-- Session dir = `dirname <plan path>`
-- Context files:
+Resolved by the SKILL.md "Input Contract" section before this file runs:
+
+- `<plan_path>` — from the `Plan:` label (or the bare argument in legacy mode)
+- `<session_dir>` — from the `Session dir:` label (or `dirname <plan_path>` in legacy mode)
+- `<round_k>` — from the `Round:` label (or computed by scanning `phase3-*-review-*.md` in legacy mode)
+- `<codex_artifact_path>` — from the `Codex artifact:` label (or `<session_dir>/phase3-codex-review-<round_k>.md` in legacy mode)
+
+Context files:
   - `<session_dir>/phase1-spec.md`
-  - `<session_dir>/phase2-code-plan.md`
+  - `<session_dir>/phase2-code-plan.md` (== `<plan_path>`)
 
 ## Preflight
 
@@ -16,7 +21,7 @@ Read this before the first review attempt.
    ```bash
    which codex
    ```
-2. Determine round `k` from `phase3-codex-review-*.md` and `phase3-claude-review-*.md` in the session dir, default `1`.
+2. Round `k` comes from the `Round:` label; only fall back to scanning `phase3-codex-review-*.md` and `phase3-claude-review-*.md` (default `1`) when running in legacy bare-path mode.
 3. Gather review inputs:
    ```bash
    git diff --stat

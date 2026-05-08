@@ -2569,23 +2569,14 @@ run_agent() {
   launch_cwd=$(qqq_agent_launch_cwd_for_session "$sess")
   # Plugin-namespaced agent id (claude CLI expects the fully-qualified name).
   local agent_id="qqq:${agent}"
-  local allowed_tools
-  allowed_tools="Bash(find *),Bash(ls *),Bash(git status *),Bash(git diff *),Bash(git log *),Bash(dirname *),Bash(basename *),Bash(date *)"
-  case "$agent" in
-    tech-interviewer)
-      allowed_tools+=",mcp__plugin_context7_context7__resolve-library-id,mcp__plugin_context7_context7__query-docs,WebSearch,WebFetch"
-      ;;
-    # code-planner owns the Phase 2 review loop directly and needs shell access
-    # for artifact discovery, fingerprinting, and summary extraction.
-    code-planner)
-      allowed_tools+=",mcp__plugin_context7_context7__resolve-library-id,mcp__plugin_context7_context7__query-docs,WebSearch,WebFetch,Bash(wc *),Bash(shasum *),Bash(sha256sum *),Bash(head *),Bash(which codex),Bash(codex *),Write(./claude-works/**),Write(../claude-works/**),Write(../../claude-works/**),Write(../../../claude-works/**),Task"
-      ;;
-    # code-implementer still needs Task for its review loop but no extra shell
-    # surface beyond the shared baseline.
-    code-implementer)
-      allowed_tools+=",Bash(wc *),Bash(which codex),Bash(codex *),Write(./claude-works/**),Write(../claude-works/**),Write(../../claude-works/**),Write(../../../claude-works/**),Task"
-      ;;
-  esac
+  # Permission model: bypassPermissions overrides --allowedTools (allow rules
+  # are advisory under bypass), so the previous per-agent allowedTools
+  # whitelist was dead code. Deny rules, however, win in every mode — so we
+  # only ship a narrow shared deny list for high-blast-radius operations.
+  # Phase agents that need MCP/WebSearch/Write/Task get them automatically
+  # via their agent frontmatter `tools:` declaration; nothing per-agent here.
+  local disallowed_tools
+  disallowed_tools="NotebookEdit,Bash(git push *),Bash(git reset --hard *),Bash(git clean *),Bash(git branch -D *),Bash(git worktree remove *),Bash(rm -rf *),Bash(sudo *),Bash(chown *),Bash(chmod -R *)"
   local qqq_plugin_dir
   qqq_plugin_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
   local qqq_skill_root="$qqq_plugin_dir/skills"
@@ -2604,10 +2595,10 @@ run_agent() {
   fi
 
   local cmd
-  printf -v cmd "cd %q && export QQQ_AGENT=%q QQQ_SESSION_DIR=%q QQQ_PHASE=%q QQQ_DEV_BRANCH=%q QQQ_PLUGIN_DIR=%q QQQ_SKILL_ROOT=%q QQQ_AGENT_ROOT=%q && claude --permission-mode bypassPermissions --allowedTools %q --agent %q" \
-    "$launch_cwd" "$agent" "$sess" "$agent" "$dev_branch" "$qqq_plugin_dir" "$qqq_skill_root" "$qqq_agent_root" "$allowed_tools" "$agent_id"
-  # Splice the phase0 flag between --allowedTools and --agent. There is exactly
-  # one `--agent ` token in cmd so this substitution is unambiguous.
+  printf -v cmd "cd %q && export QQQ_AGENT=%q QQQ_SESSION_DIR=%q QQQ_PHASE=%q QQQ_DEV_BRANCH=%q QQQ_PLUGIN_DIR=%q QQQ_SKILL_ROOT=%q QQQ_AGENT_ROOT=%q && claude --permission-mode bypassPermissions --disallowedTools %q --agent %q" \
+    "$launch_cwd" "$agent" "$sess" "$agent" "$dev_branch" "$qqq_plugin_dir" "$qqq_skill_root" "$qqq_agent_root" "$disallowed_tools" "$agent_id"
+  # Splice the phase0 flag between --disallowedTools and --agent. There is
+  # exactly one `--agent ` token in cmd so this substitution is unambiguous.
   if [[ -n "$phase0_inject_part" ]]; then
     cmd="${cmd//--agent /${phase0_inject_part}--agent }"
   fi
@@ -2643,10 +2634,11 @@ launch_rebase_conflict_resolver() {
       return 0
       ;;
   esac
-  local slug win_name plan args cmd allowed_tools launch_cwd leader_repo
+  local slug win_name plan args cmd disallowed_tools launch_cwd leader_repo
   slug=$(qqq_window_slug_from_session_dir "$session_dir")
   win_name="${slug}:rebase-resolver"
-  allowed_tools="Bash(find *),Bash(ls *),Bash(git status *),Bash(git diff *),Bash(git log *),Bash(dirname *),Bash(basename *),Bash(date *)"
+  # See run_agent for the deny-only rationale.
+  disallowed_tools="NotebookEdit,Bash(git push *),Bash(git reset --hard *),Bash(git clean *),Bash(git branch -D *),Bash(git worktree remove *),Bash(rm -rf *),Bash(sudo *),Bash(chown *),Bash(chmod -R *)"
   plan="$session_dir/phase2-code-plan.md"
   leader_repo=$(qqq_leader_repo_from "$wt_path" 2>/dev/null || printf '%s' "$wt_path")
   launch_cwd=$(qqq_checkout_exec_cwd "$wt_path" "$leader_repo")
@@ -2655,8 +2647,8 @@ launch_rebase_conflict_resolver() {
   else
     args="$session_dir worktree=$wt_path dev_branch=$dev_branch"
   fi
-  printf -v cmd "cd %q && export QQQ_AGENT=%q QQQ_SESSION_DIR=%q QQQ_PHASE=%q QQQ_DEV_BRANCH=%q && claude --permission-mode bypassPermissions --allowedTools %q --agent qqq:rebase-conflict-resolver %q" \
-    "$launch_cwd" "rebase-conflict-resolver" "$session_dir" "resolve-rebase-conflict" "$dev_branch" "$allowed_tools" "$args"
+  printf -v cmd "cd %q && export QQQ_AGENT=%q QQQ_SESSION_DIR=%q QQQ_PHASE=%q QQQ_DEV_BRANCH=%q && claude --permission-mode bypassPermissions --disallowedTools %q --agent qqq:rebase-conflict-resolver %q" \
+    "$launch_cwd" "rebase-conflict-resolver" "$session_dir" "resolve-rebase-conflict" "$dev_branch" "$disallowed_tools" "$args"
   printf '[qqq] launching rebase-conflict-resolver in tmux window...\n'
   qqq_log_workflow_event "agent_launch" "started" "rebase-conflict-resolver" "$session_dir" \
     "schema_version" "$QQQ_LOG_SCHEMA_VERSION" \

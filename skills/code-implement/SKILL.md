@@ -93,15 +93,30 @@ Write `phase3-implement-log.md` (overwrite any prior content — the review log 
 
 Loop up to `iterations` rounds. One round:
 
-1. **Invoke reviewer** via Task:
+1. **Invoke reviewer** via Task using the labeled input contract defined in `qqq:code-implement-review` (mirror of the Phase 2 planner-side contract):
+   ```text
+   Plan: <absolute path to phase2-code-plan.md>
+   Session dir: <absolute session dir>
+   Round: <k>
+   Codex artifact: <session_dir>/phase3-codex-review-<k>.md
+   Claude fallback artifact: <session_dir>/phase3-claude-review-<k>.md
+   Review policy: codex-first
+   Plan fingerprint: sha256:<digest>      # optional but recommended; compute via shasum -a 256 or sha256sum
+   Implementation log: <session_dir>/phase3-implement-log.md
+   ```
+   Compose the prompt body from the labels above (one label per line) plus a one-line directive:
+   ```
+   Run the Codex-first reviewer flow; Claude fallback is allowed only on infrastructure failure. Return verdict OKAY or REJECT with concrete issues keyed to file:line.
+   ```
+   Then call:
    ```
    Task(
      subagent_type: "qqq:code-implement-reviewer",
      description: "Review implementation round {k}",
-     prompt: "Review the implementation for the plan at <absolute path to plan>. Session dir: <path>. Use the Codex-first reviewer flow; if Codex is unavailable or fails for infrastructure reasons, Claude fallback is allowed. Return verdict OKAY or REJECT with concrete issues keyed to file:line."
+     prompt: "<labeled body + directive>"
    )
    ```
-   Pass the absolute plan path. The reviewer agent owns invoking the review engine and persisting its artifact.
+   Two artifact labels (one per engine) are required because the persisted filename depends on which engine ran. The reviewer agent owns invoking the review engine and writing the artifact at the labeled path.
 
 2. **Read the reviewer's verdict** — `OKAY` or `REJECT` plus issue list with severity + fix suggestions.
 
