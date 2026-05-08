@@ -187,7 +187,7 @@ test_scope_and_repo_action_picker() {
   rm -f "$queue"
 }
 
-test_new_session_bootstraps_worktree_and_phase_flow() {
+test_new_session_bootstraps_leader_mode_and_phase_flow() {
   local setup tmp repo remote today prompt_queue session expected_session queue capture suggested action captured_text wt_root
   setup=$(setup_repo_with_dev)
   IFS=$'\t' read -r tmp repo remote <<<"$setup"
@@ -202,16 +202,29 @@ test_new_session_bootstraps_worktree_and_phase_flow() {
   clear_test_io
   rm -f "$prompt_queue"
 
-  expected_session="$repo/.qqq-worktrees/phase1-flow/claude-works/${today}_phase1-flow"
-  assert_eq "$session" "$expected_session" "new session should be created inside the linked worktree"
-  [[ -d "$session" ]] || fail "new worktree session dir should exist"
-  [[ ! -d "$QQQ_WORKS_DIR/${today}_phase1-flow" ]] || fail "legacy root session dir should not be created"
+  # New sessions bootstrap in leader-mode by default (commit e72e2ea); the
+  # user is expected to pick `worktree-create` as a follow-up action when
+  # they want isolation. Worktree-first auto-bootstrap is no longer the
+  # design intent.
+  expected_session="$QQQ_WORKS_DIR/${today}_phase1-flow"
+  assert_eq "$session" "$expected_session" "new session should be created in leader-mode default location"
+  [[ -d "$session" ]] || fail "leader-mode session dir should exist"
+  [[ ! -d "$repo/.qqq-worktrees/phase1-flow" ]] || fail "linked worktree should not be auto-created in leader-mode bootstrap"
 
   wt_root=$(qqq_session_dir_worktree "$session")
-  assert_eq "$wt_root" "$repo/.qqq-worktrees/phase1-flow" "session should report its linked worktree root"
+  assert_eq "$wt_root" "" "leader-mode session should not report a linked worktree root"
 
+  # Phase 0 is the default suggestion for an empty session — register-issue
+  # populates phase0-issue.md as shared context for req-clarifier. Phase 0
+  # is optional from the user's perspective (they can skip it and create
+  # phase1-spec.md directly), but detect_next_phase still nudges toward it
+  # as the first action when both files are absent.
   suggested=$(detect_next_phase "$session")
-  assert_eq "$suggested" "req-clarifier" "fresh worktree-first session should start at req-clarifier"
+  assert_eq "$suggested" "register-issue" "fresh leader-mode session should start at register-issue (Phase 0)"
+
+  printf '# Issue\n' >"$session/phase0-issue.md"
+  suggested=$(detect_next_phase "$session")
+  assert_eq "$suggested" "req-clarifier" "phase0 issue should advance the suggestion to req-clarifier"
 
   printf '# Spec\n' >"$session/phase1-spec.md"
   suggested=$(detect_next_phase "$session")
@@ -238,11 +251,13 @@ EOF
   with_fzf_queue "$queue"
   export QQQ_TEST_FZF_CAPTURE_FILE="$capture"
   action=$(select_action "$session" "$suggested")
-  assert_eq "$action" "code-planner" "action menu should allow code-planner for fresh worktree session"
+  assert_eq "$action" "code-planner" "action menu should allow code-planner for fresh leader-mode session"
   captured_text=$(tr '\0' '\n' <"$capture")
   assert_contains "$captured_text" "Phase1 T4 · tech-interviewer" "action menu should include tech-interviewer"
   assert_contains "$captured_text" "Phase2 T1 · code-planner" "action menu should include code-planner"
-  assert_not_contains "$captured_text" "Worktree · create / migrate session" "action menu should not expose worktree-create anymore"
+  # In leader-mode (no live worktree) the menu should expose worktree-create
+  # so the user can choose to isolate code changes when ready.
+  assert_contains "$captured_text" "Worktree · create" "action menu should expose worktree-create in leader-mode"
 
   clear_test_io
   rm -f "$queue" "$capture"
@@ -783,7 +798,7 @@ test_rebase_conflict_preflight_uses_same_duplicate_rules() {
 
 main() {
   test_scope_and_repo_action_picker
-  test_new_session_bootstraps_worktree_and_phase_flow
+  test_new_session_bootstraps_leader_mode_and_phase_flow
   test_legacy_session_selection_is_blocked
   test_repo_action_preview_and_preflight_on_unsynced_local_dev
   test_worktree_remove_returns_error_on_remote_delete_failure

@@ -41,6 +41,13 @@ Scope guardrail: qqq stays bash-only and lightweight. Anything that requires a r
 - [x] "Recovery cookbook" — covered by Scenario K in qqq-orchestrator-guide.md (v2.0.0)
 - [x] Migration guide from v1.x leader-cwd workflow to v2.x — implicit via `worktree-create` auto-migrate; documented in Scenario H
 
+## 6. Test suite — pre-existing failures discovered during PR2-tier review
+
+These were exposed (not caused) by aligning `test-qqq-workflow-ui.sh` with the leader-mode bootstrap that became the default in commit e72e2ea. The leader-mode fix unblocked test execution, after which these surfaced. Untouched by PRs 1-5; tracked here so the workflow split (Item 4 in §4) does not get blamed for them.
+
+- [ ] `test_agent_window_preflight_non_duplicate_choices_and_ignores_non_agent_windows`: utility-window assertion (`${win_slug}:view-artifacts`) ends up inside `run_agent` captured output even though `qqq_list_session_agent_windows` filters non-managed roles. Root cause not yet localized — likely in `qqq_prompt_agent_window_preflight` output composition, or the launch_in_tmux_window stderr path. Reproduce with `bash scripts/test-qqq-workflow-ui.sh`.
+- [ ] `mkdir: cannot create directory '/.git': Permission denied` emitted late in the same test run. Likely a downstream test function (post-preflight) that lets `cwd=/` escape into a git/mkdir call after a `set -e`-tripping earlier function. Investigate after the utility-window fix.
+
 ---
 
 ## Anti-scope (do not implement)

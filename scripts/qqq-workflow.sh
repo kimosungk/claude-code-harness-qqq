@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # qqq-workflow — fzf + tmux orchestrator for the qqq plugin phase workflow.
 #
-# New sessions bootstrap directly into linked worktrees under
+# New sessions bootstrap in leader-mode under
+# ${QQQ_WORKS_DIR:-$PWD/claude-works}/YYYY-MM-DD_<slug>/. Code changes touch
+# the leader checkout directly until the user picks `worktree-create`,
+# which then promotes the session into a linked worktree at
 # .qqq-worktrees/<slug>/.../claude-works/YYYY-MM-DD_<slug>/.
-# Legacy pre-worktree sessions may still exist under
-# ${QQQ_WORKS_DIR:-$PWD/claude-works}/YYYY-MM-DD_<slug>/, but qqq only keeps
-# them visible for discard; they cannot be resumed.
+# Legacy pre-leader-mode sessions (no .qqq/session.json, no phase artifacts)
+# remain visible for discard but cannot be resumed.
 #
 # Each phase agent runs in its own tmux window; windows do NOT auto-close on
 # agent exit (an interactive shell takes over so the user can inspect).
