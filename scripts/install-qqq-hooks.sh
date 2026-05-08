@@ -121,12 +121,13 @@ merge_settings() {
           error("hooks must be a JSON object")
         end
       )
-    # Footgun B.A1 — keep matcher = "Edit|Write". Widening to include
-    # Bash without artifact-path-scoped command parsing would block
-    # ui-verifier and other phase agents that legitimately run rm -f /
-    # kill / curl. See hooks/qqq-protect-files.sh near the file_path
-    # extraction block for the contract a future Bash-arm must follow.
-    | .hooks.PreToolUse = merge_event($root; "PreToolUse"; "Edit|Write"; ".claude/hooks/qqq-protect-files.sh")
+    # Matcher = "Edit|Write|Bash". The Edit|Write arm enforces phase
+    # artifact ownership; the Bash arm (B.A3) hard-blocks commands that
+    # target launcher-owned artifacts (phase0-issue.md, .qqq/session.json,
+    # .qqq.lock). Per the B.A1 contract, the Bash arm gates ONLY on
+    # artifact-path substrings — never on command names — so legitimate
+    # ui-verifier rm -f / kill / curl invocations stay unaffected.
+    | .hooks.PreToolUse = merge_event($root; "PreToolUse"; "Edit|Write|Bash"; ".claude/hooks/qqq-protect-files.sh")
     | .hooks.TaskCreated = merge_event($root; "TaskCreated"; ""; ".claude/hooks/qqq-log-event.sh")
     | .hooks.TaskCompleted = merge_event($root; "TaskCompleted"; ""; ".claude/hooks/qqq-log-event.sh")
     | .hooks.Notification = merge_event($root; "Notification"; "permission_prompt|idle_prompt|elicitation_dialog"; ".claude/hooks/qqq-notify.sh")
@@ -151,7 +152,7 @@ print_summary() {
   printf '[qqq-hooks] active qqq hook groups:\n'
   jq -r '
     [
-      {event:"PreToolUse", matcher:"Edit|Write", command:".claude/hooks/qqq-protect-files.sh"},
+      {event:"PreToolUse", matcher:"Edit|Write|Bash", command:".claude/hooks/qqq-protect-files.sh"},
       {event:"TaskCreated", matcher:"", command:".claude/hooks/qqq-log-event.sh"},
       {event:"TaskCompleted", matcher:"", command:".claude/hooks/qqq-log-event.sh"},
       {event:"Notification", matcher:"permission_prompt|idle_prompt|elicitation_dialog", command:".claude/hooks/qqq-notify.sh"},

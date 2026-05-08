@@ -140,19 +140,36 @@ phase_artifact_owner() {
   esac
 }
 
-# ── tool_input.file_path extraction ────────────────────────────────────────
-# This hook is wired in install-qqq-hooks.sh under the "Edit|Write" matcher,
-# so payloads always carry tool_input.file_path (or .path on legacy variants).
-# When the matcher does not match (e.g. Bash, Read), we still receive nothing
-# meaningful here and exit 0.
+# ── Bash arm (B.A3) ────────────────────────────────────────────────────────
+# Edit|Write covers the Claude file-tool envelope, but a phase agent could
+# still bypass D.2 with `Bash(echo ... > phase0-issue.md)` and slip past a
+# matcher narrowed to Edit|Write. This arm closes that hole by parsing
+# tool_input.command and hard-blocking on substring matches against the
+# launcher-owned artifact tokens (phase0-issue.md, .qqq/session.json) plus
+# the runtime-owned lock (.qqq.lock).
 #
-# Footgun B.A1 — DO NOT widen the matcher to include Bash without scoping
-# command parsing by artifact path. ui-verifier and other phase agents
-# legitimately invoke `rm -f`, `kill`, `curl`, etc. against scratch files,
-# tmux panes, and dev servers; a naive command-name block would false-
-# positive them. If a future change wants Bash-side artifact protection,
-# parse tool_input.command and gate only on substrings matching artifact
-# paths (claude-works/, .qqq/) — never on command names.
+# Honors the B.A1 contract — gate ONLY on artifact-path substrings, never
+# on command names. ui-verifier's legitimate `rm -f /tmp/..`, `kill PID`,
+# `curl localhost:..` invocations are unaffected because none of those
+# command strings can plausibly mention the protected paths. Determined
+# bypass via dynamic composition (`cd .qqq && echo X > session.json`) is
+# not blocked — the hook is defense-in-depth, not a sandbox; the primary
+# threat (Claude redirecting straight to the canonical path) is closed.
+command_str=$(json_get '.tool_input.command')
+if [[ -n "$command_str" ]]; then
+  case "$command_str" in
+    *phase0-issue.md*|*.qqq/session.json*|*.qqq.lock*)
+      printf '[qqq-hooks] blocked Bash command targeting a launcher-owned artifact (phase0-issue.md / .qqq/session.json / .qqq.lock).\n' >&2
+      printf '[qqq-hooks] these files are written by the qqq workflow shell, not by Claude tools. If you need to inspect them, use Read; do not redirect into them.\n' >&2
+      exit 2
+      ;;
+  esac
+fi
+
+# ── tool_input.file_path extraction ────────────────────────────────────────
+# Wired in install-qqq-hooks.sh under the "Edit|Write|Bash" matcher. Bash
+# payloads have already been handled above; everything below operates on
+# Edit/Write (which carry tool_input.file_path or legacy .path).
 file_path=$(json_get '.tool_input.file_path')
 if [[ -z "$file_path" ]]; then
   file_path=$(json_get '.tool_input.path')

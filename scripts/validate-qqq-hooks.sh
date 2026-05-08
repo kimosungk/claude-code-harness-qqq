@@ -81,7 +81,7 @@ if [[ -f "$settings_path" ]] && jq . "$settings_path" >/dev/null 2>&1; then
 
       def required:
         [
-          {event:"PreToolUse", matcher:"Edit|Write", command:".claude/hooks/qqq-protect-files.sh"},
+          {event:"PreToolUse", matcher:"Edit|Write|Bash", command:".claude/hooks/qqq-protect-files.sh"},
           {event:"TaskCreated", matcher:null, command:".claude/hooks/qqq-log-event.sh"},
           {event:"TaskCompleted", matcher:null, command:".claude/hooks/qqq-log-event.sh"},
           {event:"Notification", matcher:"permission_prompt|idle_prompt|elicitation_dialog", command:".claude/hooks/qqq-notify.sh"},
