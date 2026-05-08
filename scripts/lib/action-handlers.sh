@@ -11,6 +11,18 @@ source "$__qqq_lib_dir/tmux-launch.sh"
 # Action handlers
 # ---------------------------------------------------------------------------
 
+# PR3 deny list — the single source of truth for `claude --disallowedTools`.
+# bypassPermissions overrides allow rules, so per-agent allowedTools is dead
+# code; deny rules win in every mode, hence a narrow shared deny list of
+# high-blast-radius operations only. Phase agents that need MCP / WebSearch
+# / Write / Task get them via their agent frontmatter `tools:` declaration.
+# Notable exclusions: curl, kill, rm -f (no -r) — ui-verifier needs them to
+# clean up its dev server. Both run_agent and launch_rebase_conflict_resolver
+# pass `$(qqq_disallowed_tools)` to claude so they cannot drift.
+qqq_disallowed_tools() {
+  printf '%s' "NotebookEdit,Bash(git push *),Bash(git reset --hard *),Bash(git clean *),Bash(git branch -D *),Bash(git worktree remove *),Bash(rm -rf *),Bash(sudo *),Bash(chown *),Bash(chmod -R *)"
+}
+
 run_agent() {
   local sess="$1" agent="$2" injected="${3:-}" prompt_iter="${4:-0}"
   printf '[qqq] action: %s  ·  session: %s\n' "$agent" "$(basename "$sess")" >&2
@@ -39,14 +51,8 @@ run_agent() {
   launch_cwd=$(qqq_agent_launch_cwd_for_session "$sess")
   # Plugin-namespaced agent id (claude CLI expects the fully-qualified name).
   local agent_id="qqq:${agent}"
-  # Permission model: bypassPermissions overrides --allowedTools (allow rules
-  # are advisory under bypass), so the previous per-agent allowedTools
-  # whitelist was dead code. Deny rules, however, win in every mode — so we
-  # only ship a narrow shared deny list for high-blast-radius operations.
-  # Phase agents that need MCP/WebSearch/Write/Task get them automatically
-  # via their agent frontmatter `tools:` declaration; nothing per-agent here.
   local disallowed_tools
-  disallowed_tools="NotebookEdit,Bash(git push *),Bash(git reset --hard *),Bash(git clean *),Bash(git branch -D *),Bash(git worktree remove *),Bash(rm -rf *),Bash(sudo *),Bash(chown *),Bash(chmod -R *)"
+  disallowed_tools=$(qqq_disallowed_tools)
   local qqq_plugin_dir
   qqq_plugin_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
   local qqq_skill_root="$qqq_plugin_dir/skills"
@@ -107,8 +113,7 @@ launch_rebase_conflict_resolver() {
   local slug win_name plan args cmd disallowed_tools launch_cwd leader_repo
   slug=$(qqq_window_slug_from_session_dir "$session_dir")
   win_name="${slug}:rebase-resolver"
-  # See run_agent for the deny-only rationale.
-  disallowed_tools="NotebookEdit,Bash(git push *),Bash(git reset --hard *),Bash(git clean *),Bash(git branch -D *),Bash(git worktree remove *),Bash(rm -rf *),Bash(sudo *),Bash(chown *),Bash(chmod -R *)"
+  disallowed_tools=$(qqq_disallowed_tools)
   plan="$session_dir/phase2-code-plan.md"
   leader_repo=$(qqq_leader_repo_from "$wt_path" 2>/dev/null || printf '%s' "$wt_path")
   launch_cwd=$(qqq_checkout_exec_cwd "$wt_path" "$leader_repo")
