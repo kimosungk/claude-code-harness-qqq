@@ -125,6 +125,16 @@ In a single Write:
    ```
 4. Stop.
 
+## Downstream consumers
+
+Once `phase1-nltp.md` is approved, the same scenario IDs (`AC-N`, `EDGE-N`) are reusable downstream:
+
+- `qqq:code-planner` references them in the plan's Verification Path (instead of inventing manual-test shapes).
+- `qqq:code-implementer` reuses them when writing the per-step acceptance command and the aggregate verification.
+- `qqq:ui-verifier` accepts them as an optional input contract (`NLTP: <abs>` + `Scenarios: AC-1, EDGE-1`) and drives the browser directly from each scenario's `Given`/`When`/`Then` triple. NLTP is the *script*; ui-verifier is the *executor*.
+
+Because every consumer keys off the literal scenario ID, do not renumber or reword IDs after Phase 6 — that breaks downstream traceability.
+
 ## Output File Template
 
 ```markdown

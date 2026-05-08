@@ -97,7 +97,7 @@ bash scripts/validate-qqq-hooks.sh <project_root>
 | Component | Purpose |
 |---|---|
 | `qqq:rebase-conflict-resolver` / `qqq:rebase-conflict-resolve` | Resolve in-progress git rebase conflicts (Codex-first, Claude fallback) |
-| `qqq:ui-verifier` | Browser-based UI verification via `playwright-cli` (separate plugin). Project conventions persist via agent memory |
+| `qqq:ui-verifier` | Browser-based UI verification via `playwright-cli` (separate plugin). Optional NLTP scenario contract (`NLTP:` + `Scenarios:` labels) drives the browser from each scenario's Given/When/Then. Project conventions persist via agent memory. |
 | `qqq:debug-frontend-pw` | Root-cause investigation in the browser via `playwright-cli` |
 | `qqq:install` | Install hooks companion pack into a project's `.claude/` |
 
