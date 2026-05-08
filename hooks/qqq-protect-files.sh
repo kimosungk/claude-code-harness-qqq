@@ -192,14 +192,19 @@ artifact_owner=$(phase_artifact_owner "$base_name" "$rel_path")
 
 if [[ "$artifact_owner" == "qqq-launcher" ]]; then
   # Launcher-owned artifacts (phase0-issue.md, .qqq/session.json) are
-  # written by shell actions in scripts/qqq-workflow.sh, never by Claude.
-  # Allow only when the caller explicitly identifies as the launcher
-  # (QQQ_AGENT=qqq-launcher); empty/main-session is treated as "not the
-  # launcher" so a vanilla Claude session cannot mutate these files.
-  if [[ "$agent_type" == "qqq-launcher" ]]; then
-    exit 0
-  fi
-  block "$rel_path is owned by qqq-launcher (workflow shell action) — current agent: ${agent_type:-main-session}"
+  # written by raw shell actions in scripts/qqq-workflow.sh +
+  # scripts/lib/* (action_register_issue uses cat/glab/jq directly,
+  # session-mgmt mutates .qqq/session.json via file primitives). No
+  # Claude tool path produces them, so any Claude Write/Edit hitting
+  # this branch is unauthorized regardless of how agent_type resolves.
+  #
+  # Earlier versions allowed agent_type == qqq-launcher to exit 0 here.
+  # That made env-only QQQ_AGENT=qqq-launcher a forgery vector — any
+  # process with that env var set could mutate launcher-owned files
+  # through Claude tools, since resolve_agent_type falls back to
+  # ${QQQ_AGENT:-} when no payload field carries an agent identifier.
+  # Hard-block closes the hole without any legitimate-flow regression.
+  block "$rel_path is owned by qqq-launcher (workflow shell action) — Claude tools may not write it (current agent: ${agent_type:-main-session})"
 fi
 
 if [[ "$artifact_owner" == "req-clarifier" ]]; then
