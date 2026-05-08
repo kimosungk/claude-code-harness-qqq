@@ -2974,12 +2974,16 @@ qqq_bootstrap_session_worktree() {
   [[ -n "$base_ref" ]] || base_ref="origin/$dev_branch"
 
   if [[ "${QQQ_NO_FETCH:-0}" != "1" ]]; then
-    # Fetch the remote that base_ref points at (default = origin).
-    local _fetch_branch="$dev_branch"
-    [[ "$base_ref" == origin/* ]] && _fetch_branch="${base_ref#origin/}"
-    if ! git -C "$leader_repo" fetch origin "$_fetch_branch" 2>/dev/null; then
-      printf '[qqq] `git fetch origin %s` failed. Set QQQ_NO_FETCH=1 to skip, or check remote/auth.\n' "$_fetch_branch" >&2
-      return 1
+    # Fetch only when base_ref is an origin/* ref. Bare branch input (e.g.
+    # `release/1.0`) is assumed to be a local branch already present;
+    # forcing `fetch origin <dev>` here would fail in repos that do not
+    # have an `origin/<dev>` (e.g., custom QQQ_DEV_BRANCH never pushed).
+    if [[ "$base_ref" == origin/* ]]; then
+      local _fetch_branch="${base_ref#origin/}"
+      if ! git -C "$leader_repo" fetch origin "$_fetch_branch" 2>/dev/null; then
+        printf '[qqq] `git fetch origin %s` failed. Set QQQ_NO_FETCH=1 to skip, or check remote/auth.\n' "$_fetch_branch" >&2
+        return 1
+      fi
     fi
   fi
 
@@ -3011,13 +3015,24 @@ qqq_bootstrap_session_worktree() {
     fi
     created_wt=yes
   else
+    # Validate base_ref. `git worktree add -b <new> <path> <start>` does NOT
+    # auto-resolve <start> to origin/<start> when only the remote-tracking
+    # ref exists (unlike `git checkout`). So if the user typed a bare ref
+    # like "release/1.0" and only origin/release/1.0 exists, we must
+    # rewrite base_ref to the explicit remote-tracking form.
     if [[ "$base_ref" == origin/* ]]; then
       local _rb="${base_ref#origin/}"
       if ! qqq_branch_exists "$leader_repo" "$_rb" remote; then
         printf '[qqq] %s not found. Push it first or pick a different base.\n' "$base_ref" >&2
         return 1
       fi
-    elif ! qqq_branch_exists "$leader_repo" "$base_ref" any; then
+    elif qqq_branch_exists "$leader_repo" "$base_ref" local; then
+      : # local branch present; worktree add can use it directly
+    elif qqq_branch_exists "$leader_repo" "$base_ref" remote; then
+      printf '[qqq] base branch %s exists only as origin/%s — using origin/%s.\n' \
+        "$base_ref" "$base_ref" "$base_ref" >&2
+      base_ref="origin/$base_ref"
+    else
       printf '[qqq] base branch %s not found (local or remote).\n' "$base_ref" >&2
       return 1
     fi
@@ -3088,7 +3103,8 @@ qqq_phase0_iid_collisions() {
     [[ -n "$sess" ]] || continue
     [[ "$sess" != "$exclude_session" ]] || continue
     [[ -f "$sess/phase0-issue.md" ]] || continue
-    collision_iid=$(sed -nE 's/^iid:[[:space:]]*([0-9]+).*/\1/p' "$sess/phase0-issue.md" | head -1)
+    # Tolerate optional surrounding quotes in case of manual edits ("42" or 42).
+    collision_iid=$(sed -nE 's/^iid:[[:space:]]*"?([0-9]+)"?.*/\1/p' "$sess/phase0-issue.md" | head -1)
     if [[ "$collision_iid" == "$iid" ]]; then
       printf '%s\n' "$sess"
     fi
@@ -3153,10 +3169,15 @@ action_register_issue() {
       fi
     fi
     if [[ ! -f "$desc_tmp" ]]; then
+      # HTML comment preamble (not '#'-line, so markdown ATX headings in the
+      # body survive verbatim). Save and quit submits the body below.
       cat >"$desc_tmp" <<'EOF'
-# Lines starting with '#' are ignored.
-# Provide the GitLab issue description below. Save and quit to confirm.
-# Leave it empty to create the issue with no description.
+<!--
+qqq Phase 0: type the GitLab issue description below.
+This HTML comment block is stripped before submission.
+Markdown headings (# H1, ## H2, ...) and any other content are preserved.
+Save and quit to confirm. Empty body submits no description.
+-->
 
 EOF
     fi
@@ -3164,14 +3185,57 @@ EOF
       printf '[qqq] editor exited non-zero — aborting.\n' >&2
       return 1
     }
-    description=$(grep -v '^#' "$desc_tmp" | sed -e '/./,$!d' | tac | sed -e '/./,$!d' | tac)
+    # Strip HTML comment blocks (single- or multi-line), then trim leading/
+    # trailing blank lines. Markdown # headings are preserved.
+    description=$(awk '
+      BEGIN { in_comment = 0 }
+      {
+        line = $0
+        while (1) {
+          if (in_comment) {
+            idx = index(line, "-->")
+            if (idx > 0) {
+              line = substr(line, idx + 3)
+              in_comment = 0
+              continue
+            } else {
+              line = ""
+              break
+            }
+          } else {
+            idx = index(line, "<!--")
+            if (idx > 0) {
+              # keep text before the comment opener; resume scan after it
+              pre  = substr(line, 1, idx - 1)
+              line = substr(line, idx + 4)
+              in_comment = 1
+              # try to close on the same line; if not, the rest is dropped
+              cidx = index(line, "-->")
+              if (cidx > 0) {
+                line = pre substr(line, cidx + 3)
+                in_comment = 0
+                continue
+              } else {
+                line = pre
+                break
+              }
+            } else {
+              break
+            }
+          }
+        }
+        print line
+      }
+    ' "$desc_tmp" | sed -e '/./,$!d' | tac | sed -e '/./,$!d' | tac)
     rm -f "$desc_tmp"
 
-    # Labels (optional, multi). glab label list output is "<name> ...";
-    # take the first column as the label name.
+    # Labels (optional, multi). Use the project labels API for safe parsing —
+    # `glab label list`'s text output truncates names with whitespace. JSON
+    # via the api endpoint preserves names verbatim.
     local labels_picked=""
     local labels_raw
-    labels_raw=$(cd "$leader_repo" && glab label list --per-page 100 2>/dev/null | awk 'NF>0 && !/^==/ {print $1}')
+    labels_raw=$(cd "$leader_repo" && glab api 'projects/:id/labels?per_page=100' 2>/dev/null \
+      | jq -r '.[]?.name // empty' 2>/dev/null)
     if [[ -n "$labels_raw" ]]; then
       labels_picked=$(printf '%s\n' "$labels_raw" \
         | qqq_fzf --multi --prompt='labels (TAB to multi-select, Enter when done) > ' --height=40% \
@@ -3262,8 +3326,20 @@ EOF
       printf '[qqq] failed to render issue list.\n' >&2
       return 1
     fi
+
+    # Cache the issues JSON in a tmp file. The previous implementation
+    # embedded the entire JSON into fzf's --preview argument verbatim, which
+    # blew up with large `issue list` payloads (every keystroke re-passed
+    # the full payload through argv, risking ARG_MAX). Now the preview
+    # command reads the file by path.
+    local issues_tmp
+    issues_tmp=$(mktemp "${TMPDIR:-/tmp}/qqq-phase0-issues.XXXXXX") || return 1
+    printf '%s' "$issues_json" >"$issues_tmp"
+    # shellcheck disable=SC2064
+    trap "rm -f $(printf '%q' "$issues_tmp")" RETURN
+
     local preview_cmd
-    preview_cmd=$(printf 'printf %%s %q | jq -r --arg iid "{1}" '\''.[] | select(.iid == ($iid|tonumber)) | .description // "(no description)"'\''' "$issues_json")
+    preview_cmd=$(printf 'jq -r --arg iid "{1}" '\''.[] | select(.iid == ($iid|tonumber)) | .description // "(no description)"'\'' %q' "$issues_tmp")
     local picked
     picked=$(printf '%s\n' "$rows" | qqq_fzf \
       --prompt='pick issue > ' --height=60% \
@@ -3281,7 +3357,7 @@ EOF
 
     # Extract chosen issue's metadata from the cached JSON.
     local issue_obj
-    issue_obj=$(printf '%s' "$issues_json" | jq -c --arg iid "$iid" '.[] | select(.iid == ($iid|tonumber))')
+    issue_obj=$(jq -c --arg iid "$iid" '.[] | select(.iid == ($iid|tonumber))' "$issues_tmp")
     title=$(printf '%s' "$issue_obj" | jq -r '.title // empty')
     description=$(printf '%s' "$issue_obj" | jq -r '.description // empty')
     state=$(printf '%s' "$issue_obj" | jq -r '.state // "opened"')
