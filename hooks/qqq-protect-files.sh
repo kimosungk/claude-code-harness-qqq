@@ -140,6 +140,19 @@ phase_artifact_owner() {
   esac
 }
 
+# ── tool_input.file_path extraction ────────────────────────────────────────
+# This hook is wired in install-qqq-hooks.sh under the "Edit|Write" matcher,
+# so payloads always carry tool_input.file_path (or .path on legacy variants).
+# When the matcher does not match (e.g. Bash, Read), we still receive nothing
+# meaningful here and exit 0.
+#
+# Footgun B.A1 — DO NOT widen the matcher to include Bash without scoping
+# command parsing by artifact path. ui-verifier and other phase agents
+# legitimately invoke `rm -f`, `kill`, `curl`, etc. against scratch files,
+# tmux panes, and dev servers; a naive command-name block would false-
+# positive them. If a future change wants Bash-side artifact protection,
+# parse tool_input.command and gate only on substrings matching artifact
+# paths (claude-works/, .qqq/) — never on command names.
 file_path=$(json_get '.tool_input.file_path')
 if [[ -z "$file_path" ]]; then
   file_path=$(json_get '.tool_input.path')

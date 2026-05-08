@@ -121,6 +121,11 @@ merge_settings() {
           error("hooks must be a JSON object")
         end
       )
+    # Footgun B.A1 — keep matcher = "Edit|Write". Widening to include
+    # Bash without artifact-path-scoped command parsing would block
+    # ui-verifier and other phase agents that legitimately run rm -f /
+    # kill / curl. See hooks/qqq-protect-files.sh near the file_path
+    # extraction block for the contract a future Bash-arm must follow.
     | .hooks.PreToolUse = merge_event($root; "PreToolUse"; "Edit|Write"; ".claude/hooks/qqq-protect-files.sh")
     | .hooks.TaskCreated = merge_event($root; "TaskCreated"; ""; ".claude/hooks/qqq-log-event.sh")
     | .hooks.TaskCompleted = merge_event($root; "TaskCompleted"; ""; ".claude/hooks/qqq-log-event.sh")
