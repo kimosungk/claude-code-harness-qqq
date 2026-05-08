@@ -49,6 +49,7 @@ bash scripts/validate-qqq-hooks.sh <project_root>
 
 | Dependency | Required for | Notes |
 |---|---|---|
+| Claude Code **2.1.84+** | hooks companion pack | `TaskCreated` was added in 2.1.84; `TaskCompleted` in 2.1.33; `SubagentStop` in 1.0.41 — qqq's `qqq-log-event.sh` and `qqq-stop-guard.sh` rely on all three |
 | `bash` 4+ | hooks, scripts | macOS default 3.2 not supported by `qqq-workflow.sh` |
 | `jq` | hooks (JSON payload parsing) | required |
 | `git` | all phase agents | required |
