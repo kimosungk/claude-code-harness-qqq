@@ -247,12 +247,67 @@ test_pr3_deny_list_contract() {
   assert_eq "$uses" "2" "qqq_disallowed_tools must be assigned from exactly 2 sites (run_agent + launch_rebase_conflict_resolver)"
 }
 
+# B.A3 — empirically verify the Bash arm of the PreToolUse hook. Asserts
+# the contract that closes the bypass: shell redirections targeting
+# launcher-owned artifacts (phase0-issue.md, .qqq/session.json, .qqq.lock)
+# are blocked, while ui-verifier-relevant commands (rm -f scratch, kill
+# PID, curl localhost) stay unblocked per the B.A1 contract.
+test_ba3_bash_arm_contract() {
+  local hook="$ROOT/hooks/qqq-protect-files.sh"
+  [[ -x "$hook" ]] || fail "qqq-protect-files.sh missing or not executable"
+
+  # Positive: shell redirection into launcher-owned artifacts must block.
+  local rc
+  set +e
+  printf '%s' '{"tool_input":{"command":"echo iid:42 > /tmp/x/phase0-issue.md"}}' | "$hook" >/dev/null 2>&1
+  rc=$?
+  set -e
+  assert_eq "$rc" "2" "Bash arm should block writes to phase0-issue.md (rc must be 2)"
+
+  set +e
+  printf '%s' '{"tool_input":{"command":"cat /tmp/x/.qqq/session.json"}}' | "$hook" >/dev/null 2>&1
+  rc=$?
+  set -e
+  assert_eq "$rc" "2" "Bash arm should block commands referencing .qqq/session.json"
+
+  set +e
+  printf '%s' '{"tool_input":{"command":"echo $$ > /tmp/x/.qqq.lock"}}' | "$hook" >/dev/null 2>&1
+  rc=$?
+  set -e
+  assert_eq "$rc" "2" "Bash arm should block commands referencing .qqq.lock"
+
+  # Negative: ui-verifier-style commands must pass through.
+  local cmd
+  for cmd in \
+    'rm -f /tmp/scratch.txt' \
+    'kill -9 12345' \
+    'curl -s http://localhost:3000/health' \
+    'find /tmp -name "*.tmp" -delete'; do
+    set +e
+    printf '%s' "{\"tool_input\":{\"command\":\"${cmd}\"}}" | "$hook" >/dev/null 2>&1
+    rc=$?
+    set -e
+    assert_eq "$rc" "0" "Bash arm should NOT block ui-verifier command: ${cmd}"
+  done
+
+  # Matcher contract: the install + validate scripts must agree on
+  # Edit|Write|Bash. Drift would silently break either fresh installs
+  # (no Bash protection) or CI validation (mismatch reported).
+  local installer="$ROOT/scripts/install-qqq-hooks.sh"
+  local validator="$ROOT/scripts/validate-qqq-hooks.sh"
+  grep -qF '"Edit|Write|Bash"' "$installer" \
+    || fail "install-qqq-hooks.sh PreToolUse matcher must be Edit|Write|Bash"
+  grep -qF 'matcher:"Edit|Write|Bash"' "$validator" \
+    || fail "validate-qqq-hooks.sh PreToolUse matcher must be Edit|Write|Bash"
+}
+
 main() {
   test_leader_session_discard
   test_worktree_discard_keep_remote
   test_worktree_discard_delete_remote
   test_force_preview_and_archive_block
   test_pr3_deny_list_contract
+  test_ba3_bash_arm_contract
   printf 'ok\n'
 }
 
