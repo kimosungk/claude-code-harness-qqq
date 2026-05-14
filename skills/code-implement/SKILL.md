@@ -14,6 +14,7 @@ The loop is: execute plan → verify locally → invoke Codex-backed reviewer �
 
 ## Hard Rules
 
+- **Phase 3 may only proceed if `phase2-review-state.json` exists and has `review_loop_completed: true`** (D1− gate — fail closed)
 - Plan (`phase2-code-plan.md`) is read-only input
 - Plan is the sole source of truth for scope and sequencing
 - `phase1-tech-spec.md` and `phase1-nltp.md` are read-only reference inputs only; they may clarify ambiguity or verification intent, but must never override the plan or widen scope
@@ -32,6 +33,7 @@ The loop is: execute plan → verify locally → invoke Codex-backed reviewer �
    - An `iterations=N` token (integer, ≥1). Default **3**.
 2. Required inputs in the session directory:
    - `phase2-code-plan.md`
+   - `phase2-review-state.json` with `review_loop_completed: true` — **D1− prerequisite gate**. Parse the JSON; if the file is absent, unreadable, or the flag is anything other than the boolean `true`, output exactly the line `prerequisite invalid: phase2 review loop not completed` and stop. Do not proceed to read the plan.
    - `phase1-tech-spec.md` and `phase1-nltp.md` are optional siblings; if present, they may be consulted as read-only references after the plan is read
 3. Confirm the resolved session directory + iteration budget with the user.
 

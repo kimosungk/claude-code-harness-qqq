@@ -2,65 +2,50 @@
 
 set -euo pipefail
 
+# qqq-context (v2.3 — Q3=다)
+# SessionStart hook. Two responsibilities:
+#   1. Recover phase context from artifact files in the current worktree.
+#   2. Warn about uncommitted phase{N}-*.md (lost if worktree is deleted).
+# Replaces the legacy 66-line version that referenced .qqq.lock, .qqq/session.json,
+# and per-agent rule strings — all retired in migration v2.3.
+
 cwd=$(pwd)
-agent_type="${QQQ_AGENT:-unknown}"
 
 is_session_dir() {
   local dir="$1"
   [[ -f "$dir/phase0-issue.md" \
     || -f "$dir/phase1-spec.md" \
+    || -f "$dir/phase1-tech-spec.md" \
     || -f "$dir/phase2-code-plan.md" \
-    || -f "$dir/phase3-implement-log.md" \
-    || -f "$dir/.qqq/session.json" \
-    || -f "$dir/.qqq.lock" \
-    || -d "$dir/.qqq" ]]
+    || -f "$dir/phase3-implement-log.md" ]]
 }
 
-if [[ -z "${QQQ_SESSION_DIR:-}" ]] && ! is_session_dir "$cwd"; then
+if ! is_session_dir "$cwd"; then
   exit 0
 fi
 
-session_dir="${QQQ_SESSION_DIR:-$cwd}"
-
-# Default fallback covers the very first action in a fresh session.
-expected_artifact="phase0-issue.md (run register-issue) — optional, or phase1-spec.md (run req-clarifier)"
-# Guard against malformed state first — a half-rewind or manual rm can leave
-# downstream artifacts without their upstream prerequisite. Flag it loudly
-# instead of quietly advising the next downstream artifact. All checks read
-# from $session_dir (not $cwd) so the hook works even when an agent runs
-# from a launch-relative cwd above the session directory.
-if [[ -f "$session_dir/phase2-code-plan.md" && ! -f "$session_dir/phase1-tech-spec.md" ]]; then
-  expected_artifact="phase1-tech-spec.md (MISSING — malformed state: phase2-code-plan.md exists without prerequisite)"
-elif [[ -f "$session_dir/phase3-implement-log.md" && ! -f "$session_dir/phase2-code-plan.md" ]]; then
-  expected_artifact="phase2-code-plan.md (MISSING — malformed state: phase3-implement-log.md exists without prerequisite)"
-elif [[ -f "$session_dir/phase1-spec.md" && ! -f "$session_dir/phase1-tech-spec.md" ]]; then
-  expected_artifact="phase1-tech-spec.md"
-elif [[ -f "$session_dir/phase1-tech-spec.md" && ! -f "$session_dir/phase2-code-plan.md" ]]; then
-  expected_artifact="phase2-code-plan.md"
-elif [[ -f "$session_dir/phase2-code-plan.md" && ! -f "$session_dir/phase3-implement-log.md" ]]; then
-  expected_artifact="phase3-implement-log.md"
-elif compgen -G "$session_dir/phase3-*-review-*.md" >/dev/null; then
-  expected_artifact="worktree-merge or claude-works-completed archive"
+# Phase inference — last artifact present determines the next expected action.
+next=""
+if [[ -f "$cwd/phase3-implement-log.md" ]]; then
+  next="phase3 done — review diff, then qqq merge"
+elif [[ -f "$cwd/phase2-code-plan.md" ]]; then
+  next="phase3 — run /qqq:code-implement (requires phase2-review-state.json with review_loop_completed: true)"
+elif [[ -f "$cwd/phase1-tech-spec.md" ]]; then
+  next="phase2 — run /qqq:code-plan"
+elif [[ -f "$cwd/phase1-spec.md" ]]; then
+  next="phase1d — run /qqq:interview-tech (optional: /qqq:ui-outline, /qqq:interview-nltp)"
+elif [[ -f "$cwd/phase0-issue.md" ]]; then
+  next="phase1 — run /qqq:clarify-requirement"
 fi
 
-printf 'qqq session dir: %s\n' "$session_dir"
-printf 'current cwd: %s\n' "$cwd"
-printf 'qqq plugin dir: %s\n' "${QQQ_PLUGIN_DIR:-unknown}"
-printf 'qqq skill root: %s\n' "${QQQ_SKILL_ROOT:-unknown}"
-printf 'qqq agent root: %s\n' "${QQQ_AGENT_ROOT:-unknown}"
-printf 'qqq skills and agents are preloaded; do not use env/grep or home-directory find to discover them.\n'
-printf 'frozen artifacts: approved phase1-tech-spec.md (when present), approved phase2-code-plan.md, claude-works-completed/*, and .qqq.lock are read-only.\n'
-if [[ "$agent_type" == "tech-interviewer" ]]; then
-  printf 'tech-interviewer rule: phase1-tech-spec.md is your only write target; phase1-spec.md may only be edited after explicit user approval of a proposed diff (logged in §7 Phase1 Amendments).\n'
-elif [[ "$agent_type" == "nltp-interviewer" ]]; then
-  printf 'nltp-interviewer rule: phase1-nltp.md is your write target. Run the auto-review loop via qqq:nltp-reviewer before showing any draft, and re-invoke the reviewer once after each user revision; round artifacts phase1-nltp-review-{k}.md are owned by nltp-reviewer. NLTP is the completion criteria for downstream Phase 2 / Phase 3 — never invent scenarios outside the locked Coverage scope.\n'
-elif [[ "$agent_type" == "nltp-reviewer" ]]; then
-  printf 'nltp-reviewer rule: write only the round artifact phase1-nltp-review-{k}.md at the path the calling agent passes in. Never edit phase1-nltp.md or phase1-spec.md. Verdict is OKAY or REJECT only — caveats are owned by the calling agent.\n'
-elif [[ "$agent_type" == "code-planner" ]]; then
-  printf 'planner rule: phase2-code-plan.md is not final until the planner-owned Phase 2 review artifacts exist. Required inputs: phase1-spec.md + phase1-tech-spec.md; read phase1-ui-outline.md and phase1-nltp.md too when present.\n'
-elif [[ "$agent_type" == "code-implementer" ]]; then
-  printf 'implementer rule: phase3-implement-log.md is not final until reviewer artifacts exist. phase2-code-plan.md is the source of truth; phase1-tech-spec.md and phase1-nltp.md are read-only references only.\n'
-else
-  printf 'agent rule: follow artifact ownership; do not overwrite another phase agent'"'"'s files.\n'
+printf 'qqq worktree: %s\n' "$cwd"
+[[ -n "$next" ]] && printf 'next expected: %s\n' "$next"
+printf 'frozen: claude-works-completed/* is read-only.\n'
+
+# Uncommit warning — phase{N}-*.md changes are lost when the worktree is deleted.
+if git -C "$cwd" rev-parse --git-dir >/dev/null 2>&1; then
+  uncommit=$(git -C "$cwd" status --short 2>/dev/null | grep -E ' phase[0-9]+-' || true)
+  if [[ -n "$uncommit" ]]; then
+    printf 'WARNING uncommitted qqq artifacts (commit before claude rm / Ctrl+X to avoid loss):\n%s\n' "$uncommit"
+  fi
 fi
-printf 'next expected artifact here: %s\n' "$expected_artifact"
