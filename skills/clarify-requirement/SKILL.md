@@ -309,3 +309,4 @@ Questions about **user requirements** that remain unresolved. Technical open que
 
 - {relevant files, related existing features, surfaced user-facing assumptions}
 ```
+<!-- symlink-test marker 1778716060 -->

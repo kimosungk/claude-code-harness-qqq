@@ -211,6 +211,9 @@ main() {
           fi
           (( create_rc == 0 )) || continue
           ;;
+        worktree-merge-preview)
+          action_worktree_merge_preview "$session" || true
+          ;;
         worktree-merge)
           local merged_session merge_rc
           merged_session=$(action_worktree_merge "$session")

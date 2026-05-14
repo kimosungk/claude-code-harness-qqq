@@ -503,3 +503,194 @@ action_worktree_merge() {
   _merge_cleanup_prompt "$canonical_session" >&2
   printf '%s' "$canonical_session"
 }
+
+# ---------------------------------------------------------------------------
+# C5: dev-merge dry-run
+# ---------------------------------------------------------------------------
+#
+# action_worktree_merge_preview simulates the rebase that action_worktree_merge
+# would perform without ever touching the session worktree, the dev branch, or
+# any tracked refs. It creates a throwaway detached worktree pinned at the
+# session branch's HEAD sha (so git allows checkout even though the same
+# branch is live elsewhere), runs `git rebase` against origin/<dev_branch>,
+# and records the conflict file list — if any — into
+# <session_dir>/.qqq/merge-preview.txt. The preview itself is the only side
+# effect: trap RETURN aborts any in-progress rebase and removes the temp
+# worktree on every exit path.
+#
+# Exit codes:
+#   0 — clean rebase, ready to merge
+#   1 — rebase produced conflicts (preview file lists the files)
+#   2 — preflight error (no live worktree, rebase already in progress, …)
+
+action_worktree_merge_preview() {
+  local session_dir="$1"
+  qqq_log_workflow_event "merge_preview" "started" "" "$session_dir" \
+    "schema_version" "$QQQ_LOG_SCHEMA_VERSION"
+
+  local leader_repo
+  leader_repo=$(qqq_leader_repo_from "$session_dir" 2>/dev/null) \
+    || leader_repo=$(qqq_leader_repo_from "$PWD" 2>/dev/null) \
+    || {
+      printf '[qqq] not in a git repo.\n' >&2
+      qqq_log_workflow_event "merge_preview" "error" "" "$session_dir" \
+        "schema_version" "$QQQ_LOG_SCHEMA_VERSION" \
+        "reason" "not in a git repo"
+      return 2
+    }
+
+  qqq_acquire_repo_lock "$leader_repo" || {
+    qqq_log_workflow_event "merge_preview" "error" "" "$session_dir" \
+      "schema_version" "$QQQ_LOG_SCHEMA_VERSION" \
+      "reason" "repo lock busy"
+    return 2
+  }
+
+  local status_line wt_path wt_state slug branch dev_branch head_sha
+  status_line=$(qqq_session_worktree_status "$session_dir" "$leader_repo")
+  wt_path="${status_line%$'\t'*}"
+  wt_state="${status_line##*$'\t'}"
+  wt_state="${wt_state%$'\n'}"
+  slug=$(qqq_slug_from_session_dir "$session_dir")
+  branch=$(qqq_worktree_branch_for "$slug")
+  dev_branch=$(qqq_session_dev_branch "$session_dir")
+
+  if [[ "$wt_state" != "live" ]]; then
+    printf '[qqq] dev-merge-preview requires a live worktree (current: %s).\n' "$wt_state" >&2
+    qqq_release_repo_lock
+    qqq_log_workflow_event "merge_preview" "error" "" "$session_dir" \
+      "schema_version" "$QQQ_LOG_SCHEMA_VERSION" \
+      "reason" "worktree not live" \
+      "wt_state" "$wt_state"
+    return 2
+  fi
+  if qqq_worktree_rebase_in_progress "$wt_path"; then
+    printf '[qqq] cannot preview: a rebase is already in progress in %s.\n' "$wt_path" >&2
+    printf '[qqq] resolve it first via resolve-rebase-conflict.\n' >&2
+    qqq_release_repo_lock
+    qqq_log_workflow_event "merge_preview" "error" "" "$session_dir" \
+      "schema_version" "$QQQ_LOG_SCHEMA_VERSION" \
+      "reason" "rebase in progress in session worktree"
+    return 2
+  fi
+
+  if [[ "${QQQ_NO_FETCH:-0}" != "1" ]]; then
+    git -C "$leader_repo" fetch origin "$dev_branch" 2>/dev/null \
+      || printf '[qqq] warning: fetch origin %s failed; proceeding with cached refs.\n' "$dev_branch" >&2
+  fi
+
+  if ! git -C "$leader_repo" rev-parse --verify "origin/$dev_branch" >/dev/null 2>&1; then
+    printf '[qqq] origin/%s not found — cannot preview.\n' "$dev_branch" >&2
+    qqq_release_repo_lock
+    qqq_log_workflow_event "merge_preview" "error" "" "$session_dir" \
+      "schema_version" "$QQQ_LOG_SCHEMA_VERSION" \
+      "reason" "origin dev missing" \
+      "dev_branch" "$dev_branch"
+    return 2
+  fi
+
+  head_sha=$(git -C "$wt_path" rev-parse HEAD 2>/dev/null)
+  if [[ -z "$head_sha" ]]; then
+    printf '[qqq] cannot resolve HEAD of %s.\n' "$wt_path" >&2
+    qqq_release_repo_lock
+    qqq_log_workflow_event "merge_preview" "error" "" "$session_dir" \
+      "schema_version" "$QQQ_LOG_SCHEMA_VERSION" \
+      "reason" "head sha missing"
+    return 2
+  fi
+
+  local tmp_path="${TMPDIR:-/tmp}/qqq-merge-preview.${slug}.$$"
+  rm -rf "$tmp_path" 2>/dev/null
+  if ! git -C "$leader_repo" worktree add --detach "$tmp_path" "$head_sha" >/dev/null 2>&1; then
+    printf '[qqq] failed to create temp worktree at %s.\n' "$tmp_path" >&2
+    qqq_release_repo_lock
+    qqq_log_workflow_event "merge_preview" "error" "" "$session_dir" \
+      "schema_version" "$QQQ_LOG_SCHEMA_VERSION" \
+      "reason" "worktree add --detach failed"
+    return 2
+  fi
+
+  # Inline trap for unconditional cleanup on every exit path. Aborts any
+  # in-progress rebase, drops the temp worktree, prunes metadata, releases
+  # the repo lock. Mirrors the inline-trap pattern in worktree-actions.sh:51.
+  trap '
+    if qqq_worktree_rebase_in_progress "$tmp_path"; then
+      git -C "$tmp_path" rebase --abort >/dev/null 2>&1 || true
+    fi
+    git -C "$leader_repo" worktree remove --force "$tmp_path" >/dev/null 2>&1 \
+      || rm -rf "$tmp_path" 2>/dev/null
+    git -C "$leader_repo" worktree prune >/dev/null 2>&1 || true
+    qqq_release_repo_lock
+  ' RETURN
+
+  local rebase_log rebase_rc conflict_files=""
+  rebase_log=$(git -C "$tmp_path" rebase --no-stat "origin/$dev_branch" 2>&1)
+  rebase_rc=$?
+  if (( rebase_rc != 0 )); then
+    conflict_files=$(git -C "$tmp_path" diff --name-only --diff-filter=U 2>/dev/null)
+    git -C "$tmp_path" rebase --abort >/dev/null 2>&1 || true
+  fi
+
+  local ahead behind
+  ahead=$(git -C "$leader_repo" rev-list --count "$head_sha..origin/$dev_branch" 2>/dev/null || echo 0)
+  behind=$(git -C "$leader_repo" rev-list --count "origin/$dev_branch..$head_sha" 2>/dev/null || echo 0)
+
+  local preview_path="$session_dir/.qqq/merge-preview.txt"
+  mkdir -p "$session_dir/.qqq" 2>/dev/null
+  {
+    printf 'qqq dev-merge preview\n'
+    printf '=====================\n'
+    printf 'generated: %s\n'    "$(qqq_iso_timestamp 2>/dev/null || date -Iseconds)"
+    printf 'session:   %s\n'    "$slug"
+    printf 'branch:    %s\n'    "$branch"
+    printf 'base:      origin/%s\n' "$dev_branch"
+    printf 'head sha:  %s\n'    "$head_sha"
+    printf 'origin/%s ahead of head:  %s\n' "$dev_branch" "$ahead"
+    printf 'head ahead of origin/%s:  %s\n' "$dev_branch" "$behind"
+    printf '\n'
+    if (( rebase_rc == 0 )); then
+      printf 'result: clean — rebase would succeed\n'
+    else
+      printf 'result: conflicts — rebase failed\n'
+      printf '\nconflict files:\n'
+      if [[ -n "$conflict_files" ]]; then
+        printf '%s\n' "$conflict_files" | sed 's/^/  - /'
+      else
+        printf '  (none reported by `git diff --diff-filter=U`)\n'
+      fi
+      printf '\nrebase output:\n'
+      printf '%s\n' "$rebase_log" | sed 's/^/  /'
+    fi
+  } >"$preview_path"
+
+  # Surface the same summary on the terminal so callers from the menu see it
+  # without having to cat the file.
+  printf '[qqq] dev-merge preview written: %s\n' "$preview_path" >&2
+  printf '[qqq] origin/%s vs HEAD — ahead=%s, behind=%s\n' "$dev_branch" "$ahead" "$behind" >&2
+  if (( rebase_rc == 0 )); then
+    printf '[qqq] preview clean — rebase would succeed.\n' >&2
+    qqq_log_workflow_event "merge_preview" "completed" "" "$session_dir" \
+      "schema_version" "$QQQ_LOG_SCHEMA_VERSION" \
+      "dev_branch" "$dev_branch" \
+      "ahead" "$ahead" \
+      "behind" "$behind" \
+      "conflicts_count" "0"
+    return 0
+  fi
+
+  local conflicts_count=0
+  if [[ -n "$conflict_files" ]]; then
+    conflicts_count=$(printf '%s\n' "$conflict_files" | grep -c .)
+  fi
+  printf '[qqq] preview conflicts: %s file(s).\n' "$conflicts_count" >&2
+  if [[ -n "$conflict_files" ]]; then
+    printf '%s\n' "$conflict_files" | sed 's/^/  - /' >&2
+  fi
+  qqq_log_workflow_event "merge_preview" "conflicts" "" "$session_dir" \
+    "schema_version" "$QQQ_LOG_SCHEMA_VERSION" \
+    "dev_branch" "$dev_branch" \
+    "ahead" "$ahead" \
+    "behind" "$behind" \
+    "conflicts_count" "$conflicts_count"
+  return 1
+}

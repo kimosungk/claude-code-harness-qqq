@@ -4,6 +4,9 @@
 # state read/write (session.json), and merge-state queries used by
 # the phase picker. Loaded after lib/worktree-helpers.sh.
 source "$__qqq_lib_dir/worktree-helpers.sh"
+# A2: glab cache helpers used by list_sessions to inline #issue/!MR signals
+# into picker rows. Pure read-only; safe to load even when glab is missing.
+source "$__qqq_lib_dir/glab-cache.sh"
 # ---------------------------------------------------------------------------
 # Session management
 # ---------------------------------------------------------------------------
@@ -19,6 +22,13 @@ list_sessions() {
   # (mtime-desc, slug-deduped)
   local scope="${1:-active}"
   local dir mtime dedupe_key bucket_scope
+  # A2: refresh the glab issue/MR cache once per picker entry (TTL-honored).
+  # qqq_emit_session_row → qqq_session_picker_label reads it for the
+  # `#42 opened · MR!17 draft` inline signal. Failures are silent.
+  local _list_leader_repo
+  if _list_leader_repo=$(qqq_leader_repo_from "$PWD" 2>/dev/null); then
+    qqq_glab_index_ensure "$_list_leader_repo" 2>/dev/null || true
+  fi
   {
     local leader_repo bucket launch_rel
     if [[ "$scope" == "active" || "$scope" == "all" ]]; then

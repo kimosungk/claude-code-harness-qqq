@@ -132,6 +132,7 @@ phase_title() {
     worktree-create)  echo 'Worktree · create (isolate session)' ;;
     worktree-open)    echo 'Worktree · open shell' ;;
     worktree-merge)   echo 'Worktree · merge session branch' ;;
+    worktree-merge-preview) echo 'Worktree · merge dry-run (no side effects)' ;;
     worktree-remove)  echo 'Worktree · remove / clean up' ;;
     done)             echo 'Completed · read-only session' ;;
     rewind)           echo 'Maintenance · rewind artifacts' ;;
@@ -156,6 +157,7 @@ phase_desc() {
     worktree-create)  echo 'Create a linked git worktree from a chosen base branch and migrate this session into it.' ;;
     worktree-open)    echo 'Open a tmux shell window rooted at the current worktree.' ;;
     worktree-merge)   echo 'Rebase onto the recorded base branch, merge the session branch, push, and clean up.' ;;
+    worktree-merge-preview) echo 'Simulate the rebase onto origin/dev in a throwaway worktree and report conflicts. Does NOT touch the dev branch or the session worktree.' ;;
     worktree-remove)  echo 'Selectively remove the worktree, branch, or remote leftovers.' ;;
     done)             echo 'Completed session. Read-only browsing actions only.' ;;
     rewind)           echo 'Delete later-phase artifacts so you can rerun from an earlier phase.' ;;

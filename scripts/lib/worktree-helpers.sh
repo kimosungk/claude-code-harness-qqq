@@ -989,6 +989,9 @@ qqq_human_age_from_epoch() {
 
 qqq_session_picker_label() {
   local session_dir="$1" mtime="$2" wt_state="$3" lock_present="$4"
+  # A2: leader_repo is optional — when absent we just skip the GitLab signal,
+  # so legacy callers (and offline mode) keep working without code changes.
+  local leader_repo="${5:-}"
   local name label age
   name=$(basename "$session_dir")
   label="${name}$(qqq_session_list_suffix "$session_dir")"
@@ -1000,6 +1003,35 @@ qqq_session_picker_label() {
     branch-only) label+=" [branch-only]" ;;
   esac
   [[ "$lock_present" == "yes" ]] && label+=" [locked]"
+
+  # A2 — inline GitLab signal: `· #42 opened · MR!17 draft`. Each lookup is
+  # cache-only (no network); empty results just append nothing.
+  if [[ -n "$leader_repo" ]] && declare -F qqq_glab_index_lookup_issue >/dev/null 2>&1; then
+    local iid issue_state mr_line mr_iid mr_draft mr_state slug branch
+    if [[ -f "$session_dir/phase0-issue.md" ]]; then
+      iid=$(sed -nE 's/^iid:[[:space:]]*"?([0-9]+)"?.*/\1/p' "$session_dir/phase0-issue.md" | head -1)
+      if [[ -n "$iid" ]]; then
+        issue_state=$(qqq_glab_index_lookup_issue "$leader_repo" "$iid" 2>/dev/null)
+        if [[ -n "$issue_state" ]]; then
+          label+=" · #${iid} ${issue_state}"
+        fi
+      fi
+    fi
+    slug=$(qqq_slug_from_session_dir "$session_dir")
+    branch=$(qqq_worktree_branch_for "$slug")
+    mr_line=$(qqq_glab_index_lookup_mr "$leader_repo" "$branch" 2>/dev/null)
+    if [[ -n "$mr_line" ]]; then
+      IFS=$'\t' read -r mr_iid mr_draft mr_state <<<"$mr_line"
+      local mr_label
+      if [[ "$mr_draft" == "true" ]]; then
+        mr_label="draft"
+      else
+        mr_label="$mr_state"
+      fi
+      label+=" · MR!${mr_iid} ${mr_label}"
+    fi
+  fi
+
   age=$(qqq_human_age_from_epoch "$mtime")
   printf '%s · %s' "$label" "$age"
 }
@@ -1023,7 +1055,7 @@ qqq_emit_session_row() {
   lock_present="${lock_info%%$'\t'*}"
   lock_info="${lock_info#*$'\t'}"
   lock_pid="${lock_info%%$'\t'*}"
-  label=$(qqq_session_picker_label "$session_dir" "$mtime" "$wt_state" "$lock_present")
+  label=$(qqq_session_picker_label "$session_dir" "$mtime" "$wt_state" "$lock_present" "$leader_repo")
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     "$label" "$session_dir" "$picker_scope" "$merge_status" "$wt_state" "$wt_path" "$lock_present" "$lock_pid"
 }

@@ -65,9 +65,10 @@ select_action() {
       options=(resolve-rebase-conflict "${options[@]}")
     fi
     # worktree-merge requires a live worktree (Stage 11 enforces this in
-    # detect_next_phase too); keep the picker symmetric.
+    # detect_next_phase too); keep the picker symmetric. C5 adds a dry-run
+    # preview as a sibling, gated by the same conditions.
     if [[ -f "$sess/phase3-implement-log.md" && "$wt_state" == "live" ]]; then
-      options+=(worktree-merge)
+      options+=(worktree-merge-preview worktree-merge)
     fi
   fi
 
