@@ -8,7 +8,7 @@ Read this before the first attempt.
   - a path to `phase2-code-plan.md`
   - a path to the session directory
   - optional `worktree=/abs/path`
-  - optional `dev_branch=name`
+  - optional `base_branch=name`
 - Session dir:
   - if the path ends with `phase2-code-plan.md`, use its parent
   - otherwise treat the path as the session dir
@@ -54,7 +54,7 @@ Goal: resolve the current rebase conflict safely and minimally, then continue th
 Context:
 - Worktree: <abs worktree path>
 - Session dir: <abs session dir>
-- Target branch being rebased onto: origin/<dev_branch>
+- Target branch being rebased onto: origin/<base_branch>
 - Requirement spec: <path or "missing">
 - Approved plan: <path or "missing">
 - UI outline: <path or "missing">

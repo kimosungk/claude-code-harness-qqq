@@ -1,7 +1,7 @@
 ---
 name: rebase-conflict-resolve
 description: "qqq:rebase-conflict-resolve — Resolve an in-progress git rebase conflict by trying Codex CLI (`codex exec`) headlessly in `workspace-write` mode first, then falling back to Claude edits only if Codex is unavailable or fails for infrastructure reasons. Persist the Codex attempt and return a strict RESOLVED or BLOCKED verdict with git-state evidence."
-argument-hint: "<path to phase2-code-plan.md or session dir> [worktree=/abs/path] [dev_branch=name]"
+argument-hint: "<path to phase2-code-plan.md or session dir> [worktree=/abs/path] [base_branch=name]"
 disable-model-invocation: false
 allowed-tools: Read, Grep, Glob, Edit, Bash(git *), Bash(ls *), Bash(find *), Bash(dirname *), Bash(basename *), Bash(date *), Bash(pwd), Bash(which codex), Bash(codex *), Write(./rebase-conflict-*.md), Write(./claude-works/**), Write(./claude-works-completed/**), Write(../claude-works/**), Write(../claude-works-completed/**), Write(../../claude-works/**), Write(../../claude-works-completed/**), Write(../../../claude-works/**), Write(../../../claude-works-completed/**)
 model: sonnet
@@ -10,7 +10,7 @@ effort: high
 
 # Rebase Conflict Resolve
 
-Resolve one thing only: an already in-progress `git rebase origin/<dev>` that stopped on conflicts.
+Resolve one thing only: an already in-progress `git rebase origin/<base>` (typically `main`, but any branch is valid) that stopped on conflicts.
 
 Codex CLI is the primary solver. Claude fallback is allowed only when Codex is unavailable or fails for infrastructure reasons such as missing CLI, auth failure, quota/rate-limit, model unavailable, or transport/runtime failure.
 
@@ -36,7 +36,7 @@ Progressive disclosure:
 
 1. Resolve inputs from `$ARGUMENTS`.
    - Accept a plan path or session dir.
-   - Accept optional `worktree=/abs/path` and `dev_branch=name`.
+   - Accept optional `worktree=/abs/path` and `base_branch=name`.
    - Session dir is the plan parent or the provided dir.
    - Worktree is `worktree=` when present, otherwise derive from git.
 

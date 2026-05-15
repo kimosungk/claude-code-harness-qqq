@@ -332,14 +332,23 @@ render_phase0_issue() {
 # ---------------------------------------------------------------------------
 
 # primitive_dispatch_phase <skill> <name_suffix>
-# Spawns a new background session at cwd with /qqq:<skill>.  F1=b: never resume.
+# Spawns a new background session at cwd with `/qqq:<skill> <session_dir>`.
+# F1=b: never resume. Each phase skill receives the session dir as $ARGUMENTS
+# so it can read prior-phase artifacts and write its own without guessing.
 primitive_dispatch_phase() {
   local skill="$1" suffix="$2"
-  local slug
-  slug=$(basename "$(current_worktree_root)")
-  local name="${slug}:${suffix}"
-  note "dispatching: claude --bg --name '$name' '/qqq:$skill'"
-  claude --bg --name "$name" "/qqq:$skill"
+  local wt slug session_dir name
+  wt=$(current_worktree_root) || die "not in a worktree"
+  slug=$(basename "$wt")
+  session_dir=$(infer_session_dir "$wt") || true
+  if [[ -z "$session_dir" || ! -d "$session_dir" ]]; then
+    err "no claude-works/<date_slug>/ session dir found in $wt"
+    err "→ run 'qqq new <slug>' first to create one"
+    exit 1
+  fi
+  name="${slug}:${suffix}"
+  note "dispatching: claude --bg --name '$name' '/qqq:$skill $session_dir'"
+  claude --bg --name "$name" "/qqq:$skill $session_dir"
 }
 
 # primitive_new <slug> [<issue_n>]
@@ -390,11 +399,13 @@ primitive_new() {
 
   # Dispatch the phase-1 session *from inside the worktree*. F1=b: new bg session.
   # --append-system-prompt-file references the in-worktree file; no temp paths.
+  # Pass the absolute session dir as the skill argument so clarify-requirement
+  # writes phase1-spec.md into the same dir primitive_new just created.
   local args=(--bg --name "${slug}:phase1")
   [[ -n "$phase0_path" ]] && args+=(--append-system-prompt-file "$phase0_path")
 
-  note "dispatching: claude ${args[*]} '/qqq:clarify-requirement'"
-  ( cd "$wt_path" && claude "${args[@]}" "/qqq:clarify-requirement" )
+  note "dispatching: claude ${args[*]} '/qqq:clarify-requirement $session_dir'"
+  ( cd "$wt_path" && claude "${args[@]}" "/qqq:clarify-requirement $session_dir" )
 }
 
 # primitive_job_action <op> [<id>]
@@ -451,11 +462,19 @@ cmd_stop()  { primitive_job_action stop   "${1:-}"; }
 cmd_rm()    { primitive_job_action rm     "${1:-}"; }
 
 cmd_merge_mr() {
-  # /qqq:merge-mr is a slash skill — dispatch via current session if attached,
-  # or as a one-off `claude --print` in cwd.
+  # /qqq:merge-mr is a slash skill — dispatch as a one-off bg session in cwd
+  # and pass the session dir so the skill knows what to archive/render.
   ensure_in_worktree_for_phase
-  note "dispatching /qqq:merge-mr"
-  claude --bg --name "$(basename "$(current_worktree_root)"):merge" "/qqq:merge-mr"
+  local wt slug session_dir
+  wt=$(current_worktree_root)
+  slug=$(basename "$wt")
+  session_dir=$(infer_session_dir "$wt") || true
+  if [[ -z "$session_dir" || ! -d "$session_dir" ]]; then
+    err "no claude-works session dir found at $wt — nothing to merge"
+    exit 1
+  fi
+  note "dispatching: claude --bg --name '$slug:merge' '/qqq:merge-mr $session_dir'"
+  claude --bg --name "${slug}:merge" "/qqq:merge-mr $session_dir"
 }
 
 # ---------------------------------------------------------------------------

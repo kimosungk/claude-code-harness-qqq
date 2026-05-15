@@ -1,7 +1,7 @@
 ---
 name: clarify-requirement
-description: "qqq:clarify-requirement — Socratic Q&A loop to clarify vague requirements into actionable specs. Outputs structured phase1-spec.md to claude-works/"
-argument-hint: "[requirement text]"
+description: "qqq:clarify-requirement — Socratic Q&A loop to clarify vague requirements into actionable specs. Outputs structured phase1-spec.md to the session directory (`claude-works/<date_slug>/`)."
+argument-hint: "<session_dir> | [requirement text]"
 disable-model-invocation: false
 allowed-tools: Read, Grep, Glob, AskUserQuestion, Bash(find * -maxdepth 4 -type d -name claude-works*), Bash(date *), Write(./claude-works/**), Write(../claude-works/**), Write(../../claude-works/**), Write(../../../claude-works/**)
 model: sonnet
@@ -44,7 +44,7 @@ Load only when needed:
 
 ### Phase 1: User-Facing Surface Scan (lightweight)
 
-Read the requirement from `$ARGUMENTS` if provided via direct invocation, or from the user's message if invoked as an agent.
+Read the requirement from the user's message (the normal v3 path: `scripts/qqq new <slug>` dispatches this skill with the session dir as `$ARGUMENTS`, so the requirement itself comes from the conversation). For direct standalone invocation, `$ARGUMENTS` may be the requirement text instead of a path — handle either case.
 
 **Goal**: identify the **existing user-facing features adjacent to the requirement** so later Socratic questions can be grounded in what users already experience. This is **not** a tech-stack / architecture / domain-model survey.
 
@@ -175,12 +175,14 @@ If `Needs more discussion`, do **not** write the spec. Tell the user which dimen
 #### Step 2 — Resolve target path
 
 In order:
-1. If `$ARGUMENTS` names a directory → use `$ARGUMENTS/phase1-spec.md`. (Normal path: `scripts/qqq` dispatches with the session dir as argument.)
-2. Otherwise (skill invoked standalone), search for an existing `claude-works` directory:
+1. **Primary (v3 CLI dispatch)** — if `$ARGUMENTS` names an existing directory → use `$ARGUMENTS/phase1-spec.md`. `scripts/qqq new <slug>` (and `qqq clarify`) always passes the session dir as the first positional argument, so this branch should fire in the normal flow.
+2. **Standalone fallback** — when the skill is invoked manually outside `scripts/qqq` (so `$ARGUMENTS` is the requirement text rather than a path), search for an existing `claude-works/` directory in cwd or one level up:
    ```bash
-   find . ../ ../../ ../../../ -maxdepth 1 -type d -name "claude-works" 2>/dev/null | head -1
+   find . .. -maxdepth 2 -type d -path '*/claude-works/*' 2>/dev/null \
+     | xargs -I{} stat -c '%Y	{}' {} 2>/dev/null \
+     | sort -rn | head -n1 | cut -f2-
    ```
-   Compose `{claude-works-base}/{YYYY-MM-DD}_{kebab-feature-name}/phase1-spec.md`. If no `claude-works` is found, default to `./claude-works/{YYYY-MM-DD}_{feature-name}/phase1-spec.md`.
+   If a match is found, reuse it. Otherwise compose `./claude-works/{YYYY-MM-DD}_{kebab-feature-name}/phase1-spec.md` and create the directory.
 3. Confirm the resolved path with AskUserQuestion (Recommended option = the proposed path; Other = custom).
 
 #### Step 3 — Write phase1-spec.md
