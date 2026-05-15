@@ -116,7 +116,7 @@ if [[ -f "$settings_path" ]] && jq . "$settings_path" >/dev/null 2>&1; then
             | .command? // empty
             | select(is_qqq_command(.))
           ] | length) as $total
-          | if $total == 7 then empty else "unexpected total qqq-owned handler count: " + ($total | tostring) + " (expected 7)" end)
+          | if $total == 2 then empty else "unexpected total qqq-owned handler count: " + ($total | tostring) + " (expected 2)" end)
       ] | .[]' "$settings_path"
   )
   if (( ${#validation_failures[@]} > 0 )); then

@@ -48,7 +48,7 @@ merge_settings() {
   local settings_path="$1"
   local tmp_path="$2"
 
-  jq '
+  jq -s '.[0] |   # guard against multi-document files from repeated installs
     def is_qqq_command($command):
       ($command | test("(^|[[:space:]])\\.claude/hooks/qqq-[^[:space:]]+\\.sh([[:space:]]|$)"));
 
@@ -126,6 +126,21 @@ merge_settings() {
     # replaced by agent view + skill-inline D1- gate.
     | .hooks.PreToolUse = merge_event($root; "PreToolUse"; "Edit|Write|Bash"; ".claude/hooks/qqq-protect-files.sh")
     | .hooks.SessionStart = merge_event($root; "SessionStart"; "startup|resume|compact"; ".claude/hooks/qqq-context.sh")
+    # Strip qqq-owned commands from deprecated event groups (v2 → v3 cleanup).
+    # Non-qqq handlers in those groups are preserved; empty groups are removed.
+    | reduce ("TaskCreated","TaskCompleted","Notification","Stop","SubagentStop") as $ev (
+        .;
+        if (.hooks[$ev] // null) != null then
+          .hooks[$ev] = (
+            (.hooks[$ev] // [])
+            | map(strip_qqq_commands)
+            | map(select((.hooks? // []) | length > 0))
+          )
+          | if (.hooks[$ev] | length) == 0 then del(.hooks[$ev]) else . end
+        else
+          .
+        end
+      )
   ' "$settings_path" >"$tmp_path"
 }
 

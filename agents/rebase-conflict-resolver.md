@@ -1,6 +1,6 @@
 ---
 name: rebase-conflict-resolver
-description: Use this agent only when explicitly invoked (typically from qqq worktree-merge after a rebase conflict). Resolves the current in-progress git rebase conflict by trying Codex CLI headlessly first, then falling back to Claude-driven edits only if Codex is unavailable or fails for infrastructure reasons such as auth, rate limits, or quota.
+description: Use this agent only when explicitly invoked (via `qqq pick` → next-phase, the qqq TUI aux menu, or directly via `/qqq:rebase-conflict-resolve`). Resolves the current in-progress git rebase conflict by trying Codex CLI headlessly first, then falling back to Claude-driven edits only if Codex is unavailable or fails for infrastructure reasons such as auth, rate limits, or quota.
 model: sonnet
 effort: high
 background: false

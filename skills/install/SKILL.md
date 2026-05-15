@@ -10,7 +10,7 @@ effort: low
 
 # Install qqq Hooks Companion Pack
 
-Install the project-local qqq hooks bundle. This skill is the supported entrypoint for hook setup; do not modify `qqq-workflow.sh` or user-global `~/.claude/settings.json`.
+Install the project-local qqq hooks bundle. This skill is the supported entrypoint for hook setup; do not directly edit hook scripts or user-global `~/.claude/settings.json`.
 
 Reference: `qqq-hooks-companion-pack.md`
 

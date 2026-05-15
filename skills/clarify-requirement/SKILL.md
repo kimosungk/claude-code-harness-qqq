@@ -175,7 +175,7 @@ If `Needs more discussion`, do **not** write the spec. Tell the user which dimen
 #### Step 2 — Resolve target path
 
 In order:
-1. If `$QQQ_SESSION_DIR` env is set and is an existing directory → use `$QQQ_SESSION_DIR/phase1-spec.md`. (Normal path for an active qqq session.)
+1. If `$ARGUMENTS` names a directory → use `$ARGUMENTS/phase1-spec.md`. (Normal path: `scripts/qqq` dispatches with the session dir as argument.)
 2. Otherwise (skill invoked standalone), search for an existing `claude-works` directory:
    ```bash
    find . ../ ../../ ../../../ -maxdepth 1 -type d -name "claude-works" 2>/dev/null | head -1
