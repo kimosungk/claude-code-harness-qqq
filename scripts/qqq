@@ -1,0 +1,953 @@
+#!/usr/bin/env bash
+# qqq — Claude Code v2.1.139+ phase orchestrator.
+#
+# Wraps `claude --bg / --worktree / --name / --append-system-prompt-file` and
+# the `claude attach / logs / stop / rm / respawn` family so the 3-phase qqq
+# workflow (clarify -> plan -> implement) can be driven from one CLI + fzf TUI.
+#
+# F1=(b): every phase command dispatches a NEW background session. The skill
+# reads previous-phase artifacts from disk; there is no `--resume` for phase
+# transitions. CLI-9 fail-closed cases (see MIGRATION_PLAN.md §2.6) are
+# enforced via ~/.claude/jobs/<short>/state.json inspection — no qqq locks.
+#
+# Usage:
+#   qqq                              # TUI entry (fzf)
+#   qqq new <slug>                   # blank session (no issue)
+#   qqq new <slug> --issue N         # GitLab issue + Phase 0/1
+#   qqq clarify|ui|nltp|tech-spec|plan|implement
+#                                    # each: new bg session at current worktree
+#   qqq attach <id>                  # direct attach
+#   qqq pick                         # fzf -> claude attach
+#   qqq logs [<id>]                  # fzf if no id
+#   qqq stop [<id>]                  # fzf if no id
+#   qqq rm [<id>]                    # fzf if no id
+#   qqq verify                       # smoke tests (G1..G6)
+#
+# Requirements:
+#   claude  >= 2.1.139
+#   fzf     (TUI + picker)
+#   glab    (Phase 0 issue fetch — only when --issue is used)
+#   jq      (state.json parsing)
+#   sha256sum or shasum -a 256
+
+set -uo pipefail
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+readonly QQQ_REQUIRED_VERSION="2.1.139"
+readonly QQQ_JOBS_DIR="${HOME}/.claude/jobs"
+readonly QQQ_WORKS_SUBDIR="claude-works"
+
+# ---------------------------------------------------------------------------
+# Logging helpers
+# ---------------------------------------------------------------------------
+
+err() { printf '[qqq] error: %s\n' "$*" >&2; }
+warn() { printf '[qqq] warn: %s\n' "$*" >&2; }
+note() { printf '[qqq] %s\n' "$*" >&2; }
+die() { err "$*"; exit 1; }
+
+# ---------------------------------------------------------------------------
+# Version + dependency gate (run once per invocation)
+# ---------------------------------------------------------------------------
+
+# Compare semver-ish strings. Returns 0 if $1 >= $2.
+version_ge() {
+  local a="$1" b="$2"
+  [[ "$(printf '%s\n%s\n' "$a" "$b" | sort -V | head -n1)" == "$b" ]]
+}
+
+check_version() {
+  local current
+  current=$(claude --version 2>/dev/null | awk '{print $1}')
+  [[ -n "$current" ]] || die "could not read 'claude --version' — install Claude Code"
+  if ! version_ge "$current" "$QQQ_REQUIRED_VERSION"; then
+    die "qqq requires Claude Code >= $QQQ_REQUIRED_VERSION (found $current). Run: claude update"
+  fi
+}
+
+check_deps() {
+  local missing=()
+  command -v fzf >/dev/null 2>&1 || missing+=("fzf")
+  command -v jq  >/dev/null 2>&1 || missing+=("jq")
+  if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then
+    missing+=("sha256sum or shasum")
+  fi
+  if (( ${#missing[@]} > 0 )); then
+    die "missing dependencies: ${missing[*]}"
+  fi
+}
+
+# glab is optional (only needed for `new --issue N` and merge-mr); probe lazily.
+check_glab() {
+  command -v glab >/dev/null 2>&1 || die "glab not found — required for --issue. Install: https://gitlab.com/gitlab-org/cli"
+}
+
+# ---------------------------------------------------------------------------
+# Git / worktree inspection
+# ---------------------------------------------------------------------------
+
+is_in_git_repo() {
+  git rev-parse --is-inside-work-tree >/dev/null 2>&1
+}
+
+# True iff cwd is inside a *linked* worktree (not the main checkout).
+is_in_worktree() {
+  is_in_git_repo || return 1
+  local common dir
+  common=$(git rev-parse --git-common-dir 2>/dev/null)
+  dir=$(git rev-parse --git-dir 2>/dev/null)
+  [[ "$common" != "$dir" ]]
+}
+
+current_worktree_root() {
+  git rev-parse --show-toplevel 2>/dev/null
+}
+
+current_branch() {
+  git rev-parse --abbrev-ref HEAD 2>/dev/null
+}
+
+# Repo slug = leader repo dirname. Used as a worktree namespace key.
+repo_slug() {
+  local common toplevel
+  common=$(git rev-parse --git-common-dir 2>/dev/null) || return 1
+  # git-common-dir points at <leader>/.git ; the leader repo is its parent.
+  toplevel=$(dirname "$common")
+  basename "$toplevel"
+}
+
+# ---------------------------------------------------------------------------
+# Claude jobs state inspection (no qqq locks — D2)
+# ---------------------------------------------------------------------------
+
+# Emit one record per active job:  <short_id>\t<state>\t<cwd>\t<intent>\t<name>
+# state ∈ working|idle|stopped|exited|...
+jobs_list() {
+  local f short state cwd intent name
+  [[ -d "$QQQ_JOBS_DIR" ]] || return 0
+  for f in "$QQQ_JOBS_DIR"/*/state.json; do
+    [[ -f "$f" ]] || continue
+    short=$(basename "$(dirname "$f")")
+    # Skip drafts / pin files
+    [[ "$short" == .* || "$short" == *.json ]] && continue
+    state=$(jq -r '.state // ""' "$f" 2>/dev/null)
+    cwd=$(jq -r '.cwd // ""' "$f" 2>/dev/null)
+    intent=$(jq -r '.intent // ""' "$f" 2>/dev/null)
+    name=$(jq -r '.name // ""' "$f" 2>/dev/null)
+    printf '%s\t%s\t%s\t%s\t%s\n' "$short" "$state" "$cwd" "$intent" "$name"
+  done
+}
+
+# Return short IDs of jobs that are *running* (state != exited, != stopped) at $1.
+jobs_running_at() {
+  local target="$1" rec short state cwd
+  while IFS=$'\t' read -r short state cwd _; do
+    [[ "$cwd" == "$target" ]] || continue
+    case "$state" in
+      exited|stopped|"") ;;
+      *) printf '%s\n' "$short" ;;
+    esac
+  done < <(jobs_list)
+}
+
+# Full UUID for a short id (from state.json).
+jobs_full_uuid() {
+  local short="$1"
+  local f="$QQQ_JOBS_DIR/$short/state.json"
+  [[ -f "$f" ]] || return 1
+  jq -r '.sessionId // .resumeSessionId // ""' "$f"
+}
+
+# Pretty single-line label for fzf rows.
+jobs_label() {
+  local short="$1" state="$2" cwd="$3" intent="$4" name="$5"
+  local trunc_intent="${intent:0:40}"
+  local trunc_cwd
+  trunc_cwd=$(printf '%s' "$cwd" | sed "s#^$HOME#~#")
+  printf '%s  [%s]  %s  — %s' \
+    "$short" "$state" "${name:-$(basename "$trunc_cwd")}" "$trunc_intent"
+}
+
+# ---------------------------------------------------------------------------
+# fzf wrapper
+# ---------------------------------------------------------------------------
+
+fzf_pick() {
+  local prompt="${1:-> }"
+  shift || true
+  fzf --prompt="$prompt" --height=40% --reverse --no-multi "$@"
+}
+
+# Show jobs in fzf, return the chosen short id (or empty on cancel).
+pick_job_id() {
+  local prompt="${1:-job > }"
+  local rows
+  rows=$(jobs_list)
+  [[ -n "$rows" ]] || { warn "no background jobs found"; return 1; }
+  local picked
+  picked=$(
+    printf '%s\n' "$rows" \
+      | awk -F'\t' '{ printf "%s\t%s [%s] %s — %s\n", $1, $1, $2, $5, $4 }' \
+      | fzf_pick "$prompt" --delimiter=$'\t' --with-nth=2 --accept-nth=1
+  )
+  [[ -n "$picked" ]] || return 1
+  printf '%s' "$picked"
+}
+
+# ---------------------------------------------------------------------------
+# Worktree-side state (CLI-9 race + cwd guards)
+# ---------------------------------------------------------------------------
+
+# CLI-9 fail-closed dispatch guard (MIGRATION_PLAN §2.6).
+# Allowed: 0 sessions at cwd, OR exactly one in "stopped" state.
+# Rejected: any working/idle (race), any exited (abnormal — investigate),
+#           or 2+ sessions at cwd (confused state — clean up first).
+ensure_dispatch_ok() {
+  local wt
+  wt=$(current_worktree_root) || die "not in a git repo"
+  local running=() exited=() stopped=() other=()
+  local short state cwd
+  while IFS=$'\t' read -r short state cwd _; do
+    [[ "$cwd" == "$wt" ]] || continue
+    case "$state" in
+      working|idle) running+=("$short") ;;
+      exited)       exited+=("$short") ;;
+      stopped)      stopped+=("$short") ;;
+      *)            other+=("${short}[$state]") ;;
+    esac
+  done < <(jobs_list)
+
+  if (( ${#running[@]} > 0 )); then
+    err "running session(s) at this worktree: ${running[*]}"
+    err "→ 'qqq attach <id>' to continue, or 'qqq stop <id>' first"
+    exit 1
+  fi
+  if (( ${#exited[@]} > 0 )); then
+    err "exited session(s) at this worktree (abnormal — investigate before dispatching):"
+    err "  ${exited[*]}"
+    err "→ 'claude logs <id>' to inspect, then 'claude rm <id>' to clear"
+    exit 1
+  fi
+  local total=$(( ${#stopped[@]} + ${#other[@]} ))
+  if (( total >= 2 )); then
+    err "$total non-running sessions at this worktree — clean up before dispatching:"
+    err "  stopped: ${stopped[*]}"
+    (( ${#other[@]} > 0 )) && err "  other: ${other[*]}"
+    err "→ 'qqq pick' or explicit 'claude rm <id>'"
+    exit 1
+  fi
+}
+
+# Phase commands (clarify/ui/nltp/tech-spec/plan/implement) must run inside a
+# worktree. Main-checkout invocations are refused; the user should use `qqq new`.
+ensure_in_worktree_for_phase() {
+  if ! is_in_worktree; then
+    err "phase commands must run inside a worktree, not the main checkout"
+    err "create one via: qqq new <slug>"
+    exit 1
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Session-directory resolution
+# ---------------------------------------------------------------------------
+
+# Most-recently-modified <worktree>/<...>/claude-works/<date_slug>/
+infer_session_dir() {
+  local wt="$1"
+  [[ -d "$wt" ]] || return 1
+  find "$wt" -type d \
+    \( -path "*/$QQQ_WORKS_SUBDIR/*" -o -path "*/claude-works-completed/*" \) \
+    -mindepth 2 -maxdepth 6 2>/dev/null \
+    | awk -F/ 'NF>=2' \
+    | while read -r d; do
+        # Filter so we only return leaf session dirs (parent ends with claude-works or claude-works-completed)
+        local parent
+        parent=$(dirname "$d")
+        case "$(basename "$parent")" in
+          "$QQQ_WORKS_SUBDIR"|"claude-works-completed") printf '%s\n' "$d" ;;
+        esac
+      done \
+    | xargs -I{} stat -c '%Y	{}' {} 2>/dev/null \
+    | sort -rn \
+    | head -n1 \
+    | cut -f2-
+}
+
+today_slug() {
+  date +%Y-%m-%d
+}
+
+# Build a fresh session dir name: <date>_<slug>.  If it collides, append -2, -3…
+new_session_dirname() {
+  local wt="$1" slug="$2" base="$(today_slug)_$slug" candidate i
+  candidate="$wt/$QQQ_WORKS_SUBDIR/$base"
+  i=2
+  while [[ -d "$candidate" ]]; do
+    candidate="$wt/$QQQ_WORKS_SUBDIR/$base-$i"
+    i=$((i + 1))
+  done
+  printf '%s' "$candidate"
+}
+
+# ---------------------------------------------------------------------------
+# Phase 0 — GitLab issue fetch (inline, no scripts/lib dependency)
+# ---------------------------------------------------------------------------
+
+render_phase0_issue() {
+  local iid="$1" out="$2" json
+  check_glab
+  json=$(glab issue view "$iid" --output json 2>/dev/null) \
+    || die "glab issue view $iid failed — check 'glab auth status'"
+
+  mkdir -p "$(dirname "$out")"
+  # All rendering done in a single jq pass so YAML scalars are properly
+  # JSON-escaped (valid YAML quoted strings) and the labels/assignees fields
+  # tolerate both GitLab response variants (string array or object array).
+  jq -r --arg iid "$iid" '
+    def label_value: if type == "string" then . else (.title // .name // "") end;
+    def assignee_value: if type == "string" then . else (.username // .login // "") end;
+    [
+      "---",
+      "iid: " + $iid,
+      "state: " + ((.state // "") | @json),
+      "web_url: " + ((.web_url // "") | @json),
+      "title: " + ((.title // "") | @json),
+      "labels: " + ([(.labels // [])[]? | label_value | select(length > 0)] | tostring),
+      "assignees: " + ([(.assignees // [])[]? | assignee_value | select(length > 0)] | tostring),
+      "---",
+      "",
+      "# " + (.title // "") + " (issue #" + $iid + ")",
+      "",
+      (.description // "")
+    ] | join("\n")
+  ' <<<"$json" > "$out" || die "rendering phase0-issue.md failed"
+}
+
+# ---------------------------------------------------------------------------
+# Primitives
+# ---------------------------------------------------------------------------
+
+# primitive_dispatch_phase <skill> <name_suffix>
+# Spawns a new background session at cwd with /qqq:<skill>.  F1=b: never resume.
+primitive_dispatch_phase() {
+  local skill="$1" suffix="$2"
+  local slug
+  slug=$(basename "$(current_worktree_root)")
+  local name="${slug}:${suffix}"
+  note "dispatching: claude --bg --name '$name' '/qqq:$skill'"
+  claude --bg --name "$name" "/qqq:$skill"
+}
+
+# primitive_new <slug> [<issue_n>]
+# Manually creates the worktree + session dir, writes phase0-issue.md *inside*
+# the worktree (MIGRATION_PLAN §4.1), then dispatches the phase-1 bg session
+# from within the worktree. Manual worktree management is deliberate: we trade
+# `claude rm`'s auto-worktree-cleanup for control over file layout. The user
+# cleans up via `git worktree remove <path>` after merge.
+primitive_new() {
+  local slug="$1" issue_n="${2:-}"
+  is_in_git_repo || die "must run from inside a git repo"
+
+  # Slug sanity: lowercase + safe charset.
+  [[ "$slug" =~ ^[a-z0-9][a-z0-9_-]*$ ]] \
+    || die "slug must match [a-z0-9_-] and start with [a-z0-9]: $slug"
+
+  local repo wt_path session_dir branch
+  repo=$(repo_slug) || die "could not determine repo slug"
+  wt_path="$HOME/.claude/worktrees/$repo/$slug"
+  branch="$slug"
+
+  [[ ! -e "$wt_path" ]] \
+    || die "worktree path already exists: $wt_path (remove via 'git worktree remove' first)"
+
+  # Refuse if branch already exists locally — manual cleanup required.
+  if git show-ref --verify --quiet "refs/heads/$branch"; then
+    die "branch '$branch' already exists — remove via 'git branch -D $branch' or pick another slug"
+  fi
+
+  note "creating worktree: $wt_path (branch $branch)"
+  git worktree add -b "$branch" "$wt_path" >&2 || die "git worktree add failed"
+
+  session_dir="$wt_path/$QQQ_WORKS_SUBDIR/$(today_slug)_$slug"
+  mkdir -p "$session_dir"
+
+  local phase0_path=""
+  if [[ -n "$issue_n" ]]; then
+    note "  fetching GitLab issue #$issue_n"
+    phase0_path="$session_dir/phase0-issue.md"
+    render_phase0_issue "$issue_n" "$phase0_path"
+    # Commit the phase0 artifact inside the worktree so it's preserved
+    # through merge regardless of when the user next commits.
+    ( cd "$wt_path" \
+      && git add "$QQQ_WORKS_SUBDIR/$(today_slug)_$slug/phase0-issue.md" \
+      && git commit -m "phase0: $slug (issue #$issue_n)" ) >&2 \
+      || warn "phase0 auto-commit failed — file written but not committed"
+  fi
+
+  # Dispatch the phase-1 session *from inside the worktree*. F1=b: new bg session.
+  # --append-system-prompt-file references the in-worktree file; no temp paths.
+  local args=(--bg --name "${slug}:phase1")
+  [[ -n "$phase0_path" ]] && args+=(--append-system-prompt-file "$phase0_path")
+
+  note "dispatching: claude ${args[*]} '/qqq:clarify-requirement'"
+  ( cd "$wt_path" && claude "${args[@]}" "/qqq:clarify-requirement" )
+}
+
+# primitive_job_action <op> [<id>]
+# op ∈ attach|logs|stop|rm|respawn.  Falls back to fzf picker when no id.
+primitive_job_action() {
+  local op="$1" id="${2:-}"
+  if [[ -z "$id" ]]; then
+    id=$(pick_job_id "$op > ") || { note "$op cancelled"; return 1; }
+  fi
+  case "$op" in
+    attach|logs|stop|rm|respawn) claude "$op" "$id" ;;
+    *) die "unknown job op: $op" ;;
+  esac
+}
+
+# ---------------------------------------------------------------------------
+# Subcommands (CLI surface)
+# ---------------------------------------------------------------------------
+
+cmd_new() {
+  local slug="" issue_n=""
+  while (( $# > 0 )); do
+    case "$1" in
+      --issue) issue_n="${2:?--issue requires N}"; shift 2 ;;
+      --issue=*) issue_n="${1#--issue=}"; shift ;;
+      -h|--help) printf 'usage: qqq new <slug> [--issue N]\n'; return 0 ;;
+      -*) die "unknown option: $1" ;;
+      *)
+        [[ -z "$slug" ]] || die "extra positional arg: $1"
+        slug="$1"; shift ;;
+    esac
+  done
+  [[ -n "$slug" ]] || die "usage: qqq new <slug> [--issue N]"
+  primitive_new "$slug" "$issue_n"
+}
+
+# Each phase command is a thin wrapper around primitive_dispatch_phase.
+cmd_clarify()   { ensure_in_worktree_for_phase; ensure_dispatch_ok; primitive_dispatch_phase clarify-requirement phase1-clarify; }
+cmd_ui()        { ensure_in_worktree_for_phase; ensure_dispatch_ok; primitive_dispatch_phase ui-outline          phase1-ui; }
+cmd_nltp()      { ensure_in_worktree_for_phase; ensure_dispatch_ok; primitive_dispatch_phase interview-nltp      phase1-nltp; }
+cmd_tech_spec() { ensure_in_worktree_for_phase; ensure_dispatch_ok; primitive_dispatch_phase interview-tech      phase1-tech; }
+cmd_plan()      { ensure_in_worktree_for_phase; ensure_dispatch_ok; primitive_dispatch_phase code-plan           phase2; }
+cmd_implement() { ensure_in_worktree_for_phase; ensure_dispatch_ok; primitive_dispatch_phase code-implement      phase3; }
+
+cmd_attach() {
+  local id="${1:-}"
+  [[ -n "$id" ]] || die "usage: qqq attach <id>"
+  primitive_job_action attach "$id"
+}
+
+cmd_pick()  { primitive_job_action attach; }
+cmd_logs()  { primitive_job_action logs   "${1:-}"; }
+cmd_stop()  { primitive_job_action stop   "${1:-}"; }
+cmd_rm()    { primitive_job_action rm     "${1:-}"; }
+
+cmd_merge_mr() {
+  # /qqq:merge-mr is a slash skill — dispatch via current session if attached,
+  # or as a one-off `claude --print` in cwd.
+  ensure_in_worktree_for_phase
+  note "dispatching /qqq:merge-mr"
+  claude --bg --name "$(basename "$(current_worktree_root)"):merge" "/qqq:merge-mr"
+}
+
+# ---------------------------------------------------------------------------
+# qqq verify — smoke tests (MIGRATION_PLAN §8.1)
+# ---------------------------------------------------------------------------
+#
+# Gates:
+#   G5  claude --version >= required                          (cheap)
+#   G6  fzf / jq / glab / sha256                              (cheap)
+#   G1  --bg + --worktree + --name + --append-system-prompt-file 4-fold combo
+#   G2  /qqq:<skill> first-prompt dispatch resolves to a skill
+#   G4  claude stop + claude --resume --print (regression guard, F1=b otherwise)
+#   G3  claude attach conversation continuity (manual — TTY input required)
+#
+# G1/G2/G4 run a *disposable* bg session inside a one-off git worktree.
+# All test state lives under $QQQ_VERIFY_TMP and is torn down via `claude rm`
+# + `git worktree remove` regardless of pass/fail.
+
+verify_log() { printf '  [%s] %s\n' "$1" "$2"; }
+
+# Extract the 8-char short id from a `claude --bg` dispatch output. The PoC-
+# observed format is `backgrounded · <short>` (middle-dot U+00B7) but newer
+# builds may vary the separator. Anchor strictly to the "backgrounded" line so
+# unrelated hex (e.g. a sha256 fragment in stderr) cannot be mistaken for an
+# id and accidentally targeted by `claude rm`.
+_verify_extract_short_id() {
+  local out="$1" id
+  id=$(printf '%s\n' "$out" \
+    | awk '/backgrounded/ {
+        for (i = 1; i <= NF; i++) {
+          # strip non-hex chars from the token first (separator middle-dot etc.)
+          tok = $i
+          gsub(/[^0-9a-f]/, "", tok)
+          if (length(tok) == 8) { print tok; exit }
+        }
+      }')
+  [[ -n "$id" ]] || return 1
+  printf '%s' "$id"
+}
+
+# Wait for a bg session's state to transition past "working". Polls
+# state.json every 2s for up to $2 seconds. Returns 0 on settle, 1 on timeout.
+_verify_wait_settled() {
+  local short="$1" max_s="${2:-60}" elapsed=0 state
+  local state_path="$QQQ_JOBS_DIR/$short/state.json"
+  while (( elapsed < max_s )); do
+    [[ -f "$state_path" ]] || return 1
+    state=$(jq -r '.state // ""' "$state_path" 2>/dev/null)
+    case "$state" in
+      idle|stopped|exited) return 0 ;;
+    esac
+    sleep 2
+    elapsed=$(( elapsed + 2 ))
+  done
+  return 1
+}
+
+# Best-effort teardown — never fails the test on cleanup errors.
+_verify_teardown() {
+  local short="$1" wt_path="$2"
+  [[ -n "$short" ]] && claude rm "$short" >/dev/null 2>&1 || true
+  if [[ -n "$wt_path" && -d "$wt_path" ]]; then
+    git worktree remove --force "$wt_path" >/dev/null 2>&1 || true
+    rm -rf "$wt_path" >/dev/null 2>&1 || true
+  fi
+}
+
+# G1: dispatch a bg session with the full 4-fold combo + verify state.json + settle.
+# G2: dispatch a slash skill that is guaranteed inert when no rebase is in
+#     progress (`/qqq:rebase-conflict-resolve` returns BLOCKED with no side
+#     effects per skills/rebase-conflict-resolve/SKILL.md). Run INSIDE the
+#     disposable G1 worktree so any artifacts the skill creates are scoped to
+#     that worktree (it gets torn down).
+_verify_g1_g2() {
+  local tag="qqq-verify-$(date +%s)-$$"
+  local wt_path="$HOME/.claude/worktrees/$(repo_slug)/$tag"
+  local sys_prompt_file
+  sys_prompt_file=$(mktemp -t qqq-verify-sys.XXXXXX) || return 1
+  printf 'test marker: QQQVERIFY_MARKER_OK\n' > "$sys_prompt_file"
+
+  verify_log G1 "creating bg session in disposable worktree ($tag)"
+  local out short
+  # 4-fold combo: --bg + --worktree + --name + --append-system-prompt-file
+  out=$(claude --bg \
+               --worktree "$tag" \
+               --name "$tag" \
+               --append-system-prompt-file "$sys_prompt_file" \
+               "say only the word READY and stop" 2>&1) || {
+    verify_log G1 "FAIL — claude dispatch returned non-zero"
+    printf '%s\n' "$out" | sed 's/^/    /'
+    rm -f "$sys_prompt_file"
+    return 1
+  }
+  rm -f "$sys_prompt_file"
+
+  short=$(_verify_extract_short_id "$out") || {
+    verify_log G1 "FAIL — no 'backgrounded · <id>' in dispatch output"
+    printf '%s\n' "$out" | sed 's/^/    /'
+    return 1
+  }
+  verify_log G1 "session short-id: $short"
+
+  # Assert state.json appears within 10s.
+  local elapsed=0
+  while (( elapsed < 10 )); do
+    [[ -f "$QQQ_JOBS_DIR/$short/state.json" ]] && break
+    sleep 1
+    elapsed=$(( elapsed + 1 ))
+  done
+  if [[ ! -f "$QQQ_JOBS_DIR/$short/state.json" ]]; then
+    verify_log G1 "FAIL — state.json never appeared"
+    _verify_teardown "$short" "$wt_path"
+    return 1
+  fi
+
+  # Wait for the session to settle (idle/stopped/exited).
+  if ! _verify_wait_settled "$short" 120; then
+    verify_log G1 "FAIL — session never settled past 'working' in 120s"
+    _verify_teardown "$short" "$wt_path"
+    return 1
+  fi
+  verify_log G1 "PASS — 4-fold combo + state.json + settle"
+
+  # G2: dispatch INSIDE the disposable worktree using a guard-first skill.
+  # `/qqq:rebase-conflict-resolve` returns BLOCKED when no rebase is in
+  # progress (which is the case in a fresh worktree). No project files touched.
+  verify_log G2 "dispatching /qqq:rebase-conflict-resolve inside disposable worktree"
+  local g2_out g2_short
+  g2_out=$(cd "$wt_path" && claude --bg --name "$tag-g2" "/qqq:rebase-conflict-resolve" 2>&1) || {
+    verify_log G2 "FAIL — G2 dispatch returned non-zero"
+    printf '%s\n' "$g2_out" | sed 's/^/    /'
+    _verify_teardown "$short" "$wt_path"
+    return 1
+  }
+  g2_short=$(_verify_extract_short_id "$g2_out") || {
+    verify_log G2 "FAIL — no short id in G2 dispatch"
+    printf '%s\n' "$g2_out" | sed 's/^/    /'
+    _verify_teardown "$short" "$wt_path"
+    return 1
+  }
+  if ! _verify_wait_settled "$g2_short" 120; then
+    verify_log G2 "FAIL — G2 session never settled in 120s"
+    _verify_teardown "$g2_short" ""
+    _verify_teardown "$short" "$wt_path"
+    return 1
+  fi
+
+  local logs
+  logs=$(claude logs "$g2_short" 2>&1 | head -300)
+  # If the slash skill did NOT resolve, Claude either echoes the literal
+  # string or emits a recognizable error. Either is fatal for G2.
+  if printf '%s' "$logs" | grep -qiE 'unknown skill|skill not found|no such skill|command not found'; then
+    verify_log G2 "FAIL — slash skill did not resolve"
+    printf '%s\n' "$logs" | sed 's/^/    /' >&2
+    _verify_teardown "$g2_short" ""
+    _verify_teardown "$short" "$wt_path"
+    return 1
+  fi
+  # Positive confirmation: the skill ran its preflight and reached a verdict.
+  # BLOCKED is the expected outcome here; RESOLVED would also count.
+  if printf '%s' "$logs" | grep -qE 'BLOCKED|RESOLVED'; then
+    verify_log G2 "PASS — /qqq:rebase-conflict-resolve produced verdict (skill resolved + ran)"
+  else
+    # Settled with no error and no verdict — best-effort PASS but log a note.
+    verify_log G2 "PASS (weak) — settled with no resolution error; verdict not observed in first 300 log lines"
+  fi
+
+  _verify_teardown "$g2_short" ""
+  _verify_teardown "$short" "$wt_path"
+  return 0
+}
+
+# G4: optional regression guard — stop a session, then re-prompt non-interactively
+# via `claude --resume <uuid> --print`. F1=b doesn't use this path operationally,
+# but if it breaks in a future Claude Code update, qqq's recovery options
+# narrow. So we keep G4 as a CHECK-ONLY warning, not a hard fail.
+_verify_g4() {
+  local tag="qqq-verify-g4-$(date +%s)-$$"
+  local out short
+  out=$(claude --bg --name "$tag" "say only the word READY and stop" 2>&1) || {
+    verify_log G4 "skip — dispatch failed (probably correlated with G1)"
+    return 0
+  }
+  short=$(_verify_extract_short_id "$out") || { verify_log G4 "skip — no short id"; return 0; }
+
+  _verify_wait_settled "$short" 120 || { verify_log G4 "skip — never settled"; _verify_teardown "$short" ""; return 0; }
+  claude stop "$short" >/dev/null 2>&1 || true
+
+  local uuid
+  uuid=$(jobs_full_uuid "$short")
+  if [[ -z "$uuid" ]]; then
+    verify_log G4 "skip — no UUID in state.json"
+    _verify_teardown "$short" ""
+    return 0
+  fi
+  local resume_out
+  resume_out=$(timeout 60 claude --resume "$uuid" --print "echo READY2" 2>&1) || {
+    verify_log G4 "WARN — resume --print failed (F1=b not affected, but recovery path narrowed)"
+    _verify_teardown "$short" ""
+    return 0
+  }
+  verify_log G4 "PASS — resume --print returned output (length=$(printf '%s' "$resume_out" | wc -c))"
+  _verify_teardown "$short" ""
+}
+
+cmd_verify() {
+  local skip_live=0
+  while (( $# > 0 )); do
+    case "$1" in
+      --cheap-only) skip_live=1; shift ;;
+      -h|--help)
+        cat <<'EOF'
+usage: qqq verify [--cheap-only]
+
+  G5 / G6                cheap (always run)
+  G1 / G2                live bg session round-trip (~2-3 min, costs API tokens)
+  G4                     resume regression guard (~1 min, optional)
+  G3                     manual — see notes after run
+
+Use --cheap-only to skip G1/G2/G4 (suitable for CI cron / pre-commit).
+EOF
+        return 0 ;;
+      *) die "unknown verify arg: $1" ;;
+    esac
+  done
+
+  local fails=()
+
+  # G5
+  if ! version_ge "$(claude --version 2>/dev/null | awk '{print $1}')" "$QQQ_REQUIRED_VERSION"; then
+    fails+=("G5: claude version < $QQQ_REQUIRED_VERSION")
+  else
+    verify_log G5 "PASS — claude $(claude --version 2>&1 | awk '{print $1}') >= $QQQ_REQUIRED_VERSION"
+  fi
+
+  # G6
+  local g6=()
+  command -v fzf  >/dev/null 2>&1 || g6+=("fzf")
+  command -v jq   >/dev/null 2>&1 || g6+=("jq")
+  command -v glab >/dev/null 2>&1 || g6+=("glab")
+  if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then
+    g6+=("sha256sum/shasum")
+  fi
+  if (( ${#g6[@]} == 0 )); then
+    verify_log G6 "PASS — fzf, jq, glab, sha256sum present"
+  else
+    fails+=("G6: missing — ${g6[*]}")
+  fi
+
+  if (( skip_live == 0 )); then
+    is_in_git_repo || die "verify (live) must run inside a git repo"
+    if ! _verify_g1_g2; then
+      fails+=("G1/G2 — see log lines above")
+    fi
+    _verify_g4
+  else
+    verify_log G1 "skipped (--cheap-only)"
+    verify_log G2 "skipped (--cheap-only)"
+    verify_log G4 "skipped (--cheap-only)"
+  fi
+
+  # G3 is documented but not automated — `claude attach` requires a TTY and
+  # interactive input that's impractical to script reliably.
+  cat <<'EOF'
+
+G3 (manual):
+  1) claude --bg --name g3test "print READY and stop"
+  2) wait until the session settles (claude logs <short> shows READY)
+  3) claude attach <short>          # open in this terminal
+  4) type a follow-up message       # if the conversation continues, PASS
+  5) Ctrl+Z to detach, claude rm <short> to clean up
+EOF
+
+  if (( ${#fails[@]} == 0 )); then
+    printf '\nqqq verify: PASS\n'
+    return 0
+  else
+    printf '\nqqq verify: FAIL\n' >&2
+    for f in "${fails[@]}"; do printf '  - %s\n' "$f" >&2; done
+    return 1
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# TUI (qqq with no args)
+# ---------------------------------------------------------------------------
+
+tui_main_menu() {
+  is_in_git_repo || die "TUI must run from inside a git repo"
+
+  local opts=()
+  opts+=("📋 new                    Start a new session (blank or from issue)")
+  opts+=("🔍 sessions               Pick a running/stopped session (attach/next-phase/logs/stop/rm)")
+  opts+=("🔀 merge                  Run /qqq:merge-mr in current worktree (push + MR/PR + merge)")
+  opts+=("⚙  aux                    Other skills (rebase-conflict-resolve / ui-verify / debug-frontend)")
+  opts+=("ℹ  verify                 Smoke test (G1..G6)")
+  opts+=("✖  quit")
+
+  local picked
+  picked=$(printf '%s\n' "${opts[@]}" | fzf_pick 'qqq > ')
+  [[ -n "$picked" ]] || return 0
+
+  case "$picked" in
+    📋*) tui_new_flow ;;
+    🔍*) tui_session_flow ;;
+    🔀*) cmd_merge_mr ;;
+    ⚙*)  tui_aux_flow ;;
+    ℹ*)  cmd_verify ;;
+    *)   return 0 ;;
+  esac
+}
+
+tui_new_flow() {
+  local choice
+  choice=$(printf '%s\n' \
+    "from-issue   Pick a GitLab issue (glab issue list) → auto-slug → confirm" \
+    "blank        Just type a slug" \
+    | fzf_pick 'new > ' --delimiter=' ' --with-nth=1,2,3 --accept-nth=1
+  )
+  [[ -n "$choice" ]] || return 0
+
+  case "$choice" in
+    from-issue)
+      check_glab
+      local iid_line iid title slug_suggest slug
+      iid_line=$(glab issue list --output json 2>/dev/null \
+        | jq -r '.[] | "\(.iid)\t\(.title)"' \
+        | fzf_pick 'issue > ' --delimiter=$'\t' --with-nth=1,2)
+      [[ -n "$iid_line" ]] || return 0
+      iid=$(printf '%s' "$iid_line" | cut -f1)
+      title=$(printf '%s' "$iid_line" | cut -f2)
+      slug_suggest=$(printf '%s' "$title" \
+        | tr '[:upper:]' '[:lower:]' \
+        | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' \
+        | cut -c1-40)
+      printf 'slug [%s]: ' "$slug_suggest" >&2
+      read -r slug
+      [[ -n "$slug" ]] || slug="$slug_suggest"
+      primitive_new "$slug" "$iid"
+      ;;
+    blank)
+      local slug
+      printf 'slug: ' >&2
+      read -r slug
+      [[ -n "$slug" ]] || { note "no slug — cancelled"; return 0; }
+      primitive_new "$slug" ""
+      ;;
+  esac
+}
+
+tui_session_flow() {
+  local id
+  id=$(pick_job_id 'session > ') || return 0
+  local action
+  action=$(printf '%s\n' \
+    "attach      Open in this terminal" \
+    "next-phase  Run the next phase (clarify/ui/nltp/tech-spec/plan/implement)" \
+    "logs        Tail recent output" \
+    "stop        Stop (keeps conversation)" \
+    "rm          Delete session + worktree" \
+    | fzf_pick "$id > " --delimiter=' ' --accept-nth=1
+  )
+  [[ -n "$action" ]] || return 0
+
+  case "$action" in
+    attach) primitive_job_action attach "$id" ;;
+    logs)   primitive_job_action logs   "$id" ;;
+    stop)   primitive_job_action stop   "$id" ;;
+    rm)     primitive_job_action rm     "$id" ;;
+    next-phase) tui_next_phase_flow "$id" ;;
+  esac
+}
+
+# next-phase flow: attach to the session's cwd, then dispatch the next phase.
+# We do NOT run inside the existing bg session — F1=b: each phase is a new bg
+# session. We just inherit the cwd from the picked session.
+tui_next_phase_flow() {
+  local id="$1"
+  local state_path="$QQQ_JOBS_DIR/$id/state.json"
+  [[ -f "$state_path" ]] || { err "no state.json for $id"; return 1; }
+  local cwd
+  cwd=$(jq -r '.cwd // ""' "$state_path")
+  [[ -d "$cwd" ]] || { err "session cwd no longer exists: $cwd"; return 1; }
+
+  local phase
+  phase=$(printf '%s\n' \
+    "clarify     /qqq:clarify-requirement" \
+    "ui          /qqq:ui-outline" \
+    "nltp        /qqq:interview-nltp" \
+    "tech-spec   /qqq:interview-tech" \
+    "plan        /qqq:code-plan" \
+    "implement   /qqq:code-implement" \
+    | fzf_pick 'next phase > ' --delimiter=' ' --accept-nth=1
+  )
+  [[ -n "$phase" ]] || return 0
+
+  # Re-enter the worktree, then call the phase command. CLI-9 race check
+  # runs inside each cmd_*.
+  ( cd "$cwd" && case "$phase" in
+      clarify)   cmd_clarify ;;
+      ui)        cmd_ui ;;
+      nltp)      cmd_nltp ;;
+      tech-spec) cmd_tech_spec ;;
+      plan)      cmd_plan ;;
+      implement) cmd_implement ;;
+    esac
+  )
+}
+
+tui_aux_flow() {
+  local skill
+  skill=$(printf '%s\n' \
+    "rebase-conflict-resolve   /qqq:rebase-conflict-resolve" \
+    "ui-verify                 /qqq:ui-verify" \
+    "debug-frontend-pw         /qqq:debug-frontend-pw" \
+    | fzf_pick 'aux > ' --delimiter=' ' --accept-nth=1
+  )
+  [[ -n "$skill" ]] || return 0
+  ensure_in_worktree_for_phase
+  ensure_dispatch_ok
+  primitive_dispatch_phase "$skill" aux
+}
+
+# ---------------------------------------------------------------------------
+# Usage
+# ---------------------------------------------------------------------------
+
+usage() {
+  cat <<'EOF'
+usage: qqq [command] [args]
+
+  (no command)         TUI entry (fzf menu)
+  new <slug>           Start a blank session (no issue)
+  new <slug> --issue N GitLab issue + Phase 0/1
+  clarify              Run /qqq:clarify-requirement in current worktree
+  ui                   Run /qqq:ui-outline (Optional)
+  nltp                 Run /qqq:interview-nltp (Optional)
+  tech-spec            Run /qqq:interview-tech
+  plan                 Run /qqq:code-plan
+  implement            Run /qqq:code-implement
+  attach <id>          claude attach <id>
+  pick                 fzf → claude attach
+  logs   [<id>]        claude logs   (fzf if no id)
+  stop   [<id>]        claude stop   (fzf if no id)
+  rm     [<id>]        claude rm     (fzf if no id)
+  merge-mr             Run /qqq:merge-mr in current worktree
+  verify               Cheap smoke tests (G5/G6 now; G1..G4 in Task #13)
+  -h, --help           Show this help
+
+Phase commands enforce F1=b (new bg session per phase) + CLI-9 race-free dispatch.
+See MIGRATION_PLAN.md for the full design.
+EOF
+}
+
+# ---------------------------------------------------------------------------
+# main
+# ---------------------------------------------------------------------------
+
+main() {
+  if (( $# == 0 )); then
+    check_version
+    check_deps
+    tui_main_menu
+    return $?
+  fi
+
+  case "$1" in
+    -h|--help|help) usage; return 0 ;;
+    --version)      claude --version; return 0 ;;
+    verify)         shift; check_deps; cmd_verify "$@"; return $? ;;
+  esac
+
+  check_version
+  check_deps
+
+  local cmd="$1"; shift
+  case "$cmd" in
+    new)        cmd_new "$@" ;;
+    clarify)    cmd_clarify ;;
+    ui)         cmd_ui ;;
+    nltp)       cmd_nltp ;;
+    tech-spec)  cmd_tech_spec ;;
+    plan)       cmd_plan ;;
+    implement)  cmd_implement ;;
+    attach)     cmd_attach "$@" ;;
+    pick)       cmd_pick ;;
+    logs)       cmd_logs "$@" ;;
+    stop)       cmd_stop "$@" ;;
+    rm)         cmd_rm "$@" ;;
+    merge|merge-mr) cmd_merge_mr ;;
+    *)          err "unknown command: $cmd"; usage; exit 2 ;;
+  esac
+}
+
+main "$@"

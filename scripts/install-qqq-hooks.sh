@@ -14,10 +14,7 @@ validate_script="$script_dir/validate-qqq-hooks.sh"
 
 readonly required_hooks=(
   qqq-protect-files.sh
-  qqq-log-event.sh
   qqq-context.sh
-  qqq-stop-guard.sh
-  qqq-notify.sh
 )
 
 need() {
@@ -122,18 +119,13 @@ merge_settings() {
         end
       )
     # Matcher = "Edit|Write|Bash". The Edit|Write arm enforces phase
-    # artifact ownership; the Bash arm (B.A3) hard-blocks commands that
-    # target launcher-owned artifacts (phase0-issue.md, .qqq/session.json,
-    # .qqq.lock). Per the B.A1 contract, the Bash arm gates ONLY on
-    # artifact-path substrings — never on command names — so legitimate
-    # ui-verifier rm -f / kill / curl invocations stay unaffected.
+    # artifact ownership for files under claude-works-completed/; the Bash
+    # arm hard-blocks shell commands targeting the same paths. Migration
+    # v2.3 dropped TaskCreated/TaskCompleted (qqq-log-event), Notification
+    # (qqq-notify), Stop/SubagentStop (qqq-stop-guard) — those hooks are
+    # replaced by agent view + skill-inline D1- gate.
     | .hooks.PreToolUse = merge_event($root; "PreToolUse"; "Edit|Write|Bash"; ".claude/hooks/qqq-protect-files.sh")
-    | .hooks.TaskCreated = merge_event($root; "TaskCreated"; ""; ".claude/hooks/qqq-log-event.sh")
-    | .hooks.TaskCompleted = merge_event($root; "TaskCompleted"; ""; ".claude/hooks/qqq-log-event.sh")
-    | .hooks.Notification = merge_event($root; "Notification"; "permission_prompt|idle_prompt|elicitation_dialog"; ".claude/hooks/qqq-notify.sh")
     | .hooks.SessionStart = merge_event($root; "SessionStart"; "startup|resume|compact"; ".claude/hooks/qqq-context.sh")
-    | .hooks.Stop = merge_event($root; "Stop"; ""; ".claude/hooks/qqq-stop-guard.sh")
-    | .hooks.SubagentStop = merge_event($root; "SubagentStop"; ""; ".claude/hooks/qqq-stop-guard.sh")
   ' "$settings_path" >"$tmp_path"
 }
 
@@ -153,12 +145,7 @@ print_summary() {
   jq -r '
     [
       {event:"PreToolUse", matcher:"Edit|Write|Bash", command:".claude/hooks/qqq-protect-files.sh"},
-      {event:"TaskCreated", matcher:"", command:".claude/hooks/qqq-log-event.sh"},
-      {event:"TaskCompleted", matcher:"", command:".claude/hooks/qqq-log-event.sh"},
-      {event:"Notification", matcher:"permission_prompt|idle_prompt|elicitation_dialog", command:".claude/hooks/qqq-notify.sh"},
-      {event:"SessionStart", matcher:"startup|resume|compact", command:".claude/hooks/qqq-context.sh"},
-      {event:"Stop", matcher:"", command:".claude/hooks/qqq-stop-guard.sh"},
-      {event:"SubagentStop", matcher:"", command:".claude/hooks/qqq-stop-guard.sh"}
+      {event:"SessionStart", matcher:"startup|resume|compact", command:".claude/hooks/qqq-context.sh"}
     ]
     | .[]
     | "- " + .event

@@ -44,10 +44,7 @@ fi
 
 for hook_name in \
   qqq-protect-files.sh \
-  qqq-log-event.sh \
-  qqq-context.sh \
-  qqq-stop-guard.sh \
-  qqq-notify.sh; do
+  qqq-context.sh; do
   hook_path="$hooks_dir/$hook_name"
   [[ -f "$hook_path" ]] || failures+=("missing hook script: .claude/hooks/$hook_name")
   [[ -x "$hook_path" ]] || failures+=("hook script is not executable: .claude/hooks/$hook_name")
@@ -62,7 +59,7 @@ if [[ -f "$settings_path" ]] && jq . "$settings_path" >/dev/null 2>&1; then
         else
           empty
         end),
-        (["PreToolUse","TaskCreated","TaskCompleted","Notification","SessionStart","Stop","SubagentStop"][] as $event
+        (["PreToolUse","SessionStart"][] as $event
           | if (.hooks[$event] // null) != null and (.hooks[$event] | type) != "array" then
               "hooks." + $event + " must be an array"
             else
@@ -82,12 +79,7 @@ if [[ -f "$settings_path" ]] && jq . "$settings_path" >/dev/null 2>&1; then
       def required:
         [
           {event:"PreToolUse", matcher:"Edit|Write|Bash", command:".claude/hooks/qqq-protect-files.sh"},
-          {event:"TaskCreated", matcher:null, command:".claude/hooks/qqq-log-event.sh"},
-          {event:"TaskCompleted", matcher:null, command:".claude/hooks/qqq-log-event.sh"},
-          {event:"Notification", matcher:"permission_prompt|idle_prompt|elicitation_dialog", command:".claude/hooks/qqq-notify.sh"},
-          {event:"SessionStart", matcher:"startup|resume|compact", command:".claude/hooks/qqq-context.sh"},
-          {event:"Stop", matcher:null, command:".claude/hooks/qqq-stop-guard.sh"},
-          {event:"SubagentStop", matcher:null, command:".claude/hooks/qqq-stop-guard.sh"}
+          {event:"SessionStart", matcher:"startup|resume|compact", command:".claude/hooks/qqq-context.sh"}
         ];
 
       def handlers_for($event):
