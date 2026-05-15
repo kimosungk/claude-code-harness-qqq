@@ -212,6 +212,22 @@ fi
 
 mkdir -p "$hooks_dir"
 
+# v2 → v3 cleanup: remove hook scripts that were installed by earlier
+# versions but are no longer in $required_hooks. Settings entries for these
+# were already stripped by merge_settings; this cleans up the file copies.
+readonly deprecated_hooks=(
+  qqq-log-event.sh
+  qqq-notify.sh
+  qqq-stop-guard.sh
+)
+for stale in "${deprecated_hooks[@]}"; do
+  stale_path="$hooks_dir/$stale"
+  if [[ -f "$stale_path" ]]; then
+    rm -f "$stale_path"
+    changed_files+=(".claude/hooks/$stale (removed)")
+  fi
+done
+
 for hook_name in "${required_hooks[@]}"; do
   src="$hook_src_dir/$hook_name"
   dest="$hooks_dir/$hook_name"
