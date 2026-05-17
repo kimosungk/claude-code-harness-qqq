@@ -47,11 +47,15 @@ If a tech choice would violate frozen UX in `phase1-spec.md`, route through the 
 ## Hard Rules
 
 - Never write production code files. Write targets: `phase1-tech-spec.md` (self-owned) and, with explicit user approval, `phase1-spec.md` (via Amendment Gate).
-- Every locked decision cites `file:line` or external doc URL + one-line rationale.
-- Mark autonomous decisions explicitly with a `Decided` column in §1 / §5 of `phase1-tech-spec.md`.
+- Spec body (§1-§9, before the `<!-- audit-only-below -->` anchor) contains decisions, evidence, and short rationale only. **No implementation code** (useState bodies, if-else branches, try-catch wrapping, JSX returns, method bodies). Allowed code forms: type/interface declarations, function signatures (no body), struct field declarations, JSON-schema fragments, mermaid/ASCII diagrams. Section-aware exception: §2 store-shape code fences.
+- Every locked decision cites `file:line` or external doc URL **in the Evidence column** + one-line rationale **in the Rationale column** of the decision's home section (§1-§6).
+- Each locked decision carries a stable **Decision ID (DEC-N)** in its spec body row. Autonomy tier (`Autonomously` / `With user (confirmed)` / `With user (discussed)`) is recorded **only in §10 Decision Audit Trail** (anchor-isolated), keyed by DEC-N. Spec body decision rows never carry a `Decided` column.
+- §7 Phase1 Amendments uses a 4-short-field row structure (Section / Change ≤120 chars single line / Why ≤120 chars single line / Affected DEC). No prose paragraphs, no markdown line breaks in cells.
+- Spec body length cap: 500 lines target, 600 lines hard cap, 750 lines HIGH-complexity override (requires explicit user sign-off recorded in §0 metadata). Anchor-following §10 audit content does not count toward the cap.
 - Phase1 amendments go through the Amendment Gate atomic sequence — never free-hand edit `phase1-spec.md` (the protect-files hook trusts you on this; violations bypass enforcement).
 - Never proceed past the readiness verdict without user approval.
 - For new dependency decisions, use `mcp__plugin_context7_context7__*` / `WebFetch` to ground choices in current docs before locking.
+- Grandfather note: pre-existing `phase1-tech-spec.md` files written before these rules took effect retain their original structure. Do not treat their longer length, in-body audit metadata, or merged-section layout as a template to imitate when writing new specs.
 
 ## Reference Files
 
@@ -59,6 +63,7 @@ Read on demand:
 - `${CLAUDE_SKILL_DIR}/references/decision-rubric.md` — 5-axis rubric, autonomy tiers (L1/L2/L3), library-decision sub-protocol. **Load when applying the rubric to any concrete decision.**
 - `${CLAUDE_SKILL_DIR}/references/amendment-gate.md` — worked examples, multi-intent edge cases, failure recovery. **Load only when an Amendment Gate is triggered.**
 - `${CLAUDE_SKILL_DIR}/references/socratic-techniques.md` — question shapes for L3 (full escalation) rounds. **Load when an L3 round needs richer prompt structure than `AskUserQuestion` options provide.**
+- `${CLAUDE_SKILL_DIR}/references/scope-lint.md` — deterministic lint rules (regex patterns, line-count formulas, whitelist sections, violation UX) for Phase 6 Step 1.4. **Load before running Step 1.4.**
 - `${CLAUDE_SKILL_DIR}/references/codex-sanity-check.md` — Codex primary path for the Phase 6 Step 1.5 sanity-check (command, prompt, schema, persist rules). **Load before running Step 1.5.**
 - `${CLAUDE_SKILL_DIR}/references/sanity-check.schema.json` — JSON Schema pinning the sanity-check output shape. **Read by `--output-schema` directly; the SKILL itself rarely needs to open it.**
 - `${CLAUDE_SKILL_DIR}/references/claude-fallback.md` — inline-Claude fallback for Step 1.5 when Codex fails for an infrastructure reason. **Load only when the Codex sanity-check attempt failed.**
@@ -175,7 +180,8 @@ Triggered when (a) `phase1-spec.md` has a gap blocking a tech decision, OR (b) a
 5. **On Approve** (atomic — if any sub-step fails, stop and tell the user exactly which step succeeded):
    1. Apply `Edit` to `phase1-spec.md`.
    2. Re-read the file and confirm "After" text now present.
-   3. Append a row to §7 of `phase1-tech-spec.md`.
+   3. If `phase1-tech-spec.md` does not yet exist in the session dir (Gate fires during Phase 3 before Phase 6 Step 1): `Write` a skeleton draft using the template below — include §1-§9 headings (empty bodies allowed), the `<!-- audit-only-below — readers must stop here -->` anchor, and §10 Decision Audit Trail. Set `Status: Draft`. The skeleton is overwritten by Phase 6 Step 1's full content, but `Edit` preserves §7 rows appended in this Gate.
+   4. Append a row to §7 of `phase1-tech-spec.md` using the 4-short-field structure (Section / Change ≤120 chars / Why ≤120 chars / Affected DEC / Approved at). No prose narrative in §7.
 6. **Return path** — Approve / Reject / Defer all return to Phase 3. The Gate is never terminal.
 
 **Examples, edge cases, failure recovery**: see `references/amendment-gate.md`.
@@ -194,12 +200,14 @@ Score by autonomy-tier composition:
 
 Before presenting the verdict, if `L1 count / total locked decisions > 0.8`:
 
-1. Enumerate every `Decided: Autonomously` row from §1, §2, §3, §5, §6 with its evidence + rationale, as a numbered list.
+1. Enumerate every `Decided: Autonomously` row from **§10 Decision Audit Trail** (anchor-isolated audit area) with its evidence + rationale, as a numbered list. Spec body decision rows (§1-§6) do not carry autonomy tier — pull tier values from §10.
 2. `AskUserQuestion`: *"Most decisions were autonomous. Any worth revisiting? (item numbers, comma-separated, or `none`)"*
-3. For each item the user picks, demote that decision to L3 and run a Socratic round to re-decide (re-mark as `Decided: With user (discussed)`).
+3. For each item the user picks, demote that decision to L3 and run a Socratic round to re-decide. Update the corresponding §10 row to `Decided: With user (discussed)`. Spec body decision row's Rationale may need a brief edit if the choice itself changed.
 4. After the user replies `none` (or after all picked items are re-decided), proceed to verdict.
 
 This converts the L1>80% safeguard from a passive warning into an active checkpoint — the user cannot silently skip the autonomous-decision batch.
+
+**Output location rule**: Forced L1 Review results (re-decided rows, demotion log) live in §10 only. Never write the review log into §5 ADR narrative or other spec body sections — that re-introduces audit metadata leakage into code-planner's LLM context.
 
 #### Present the verdict
 
@@ -219,6 +227,33 @@ This converts the L1>80% safeguard from a passive warning into an active checkpo
 #### Step 1 — Write `phase1-tech-spec.md`
 
 Write to `<session-dir>/phase1-tech-spec.md` using the template below. Use `Write` for initial creation; use `Edit` for revisions within session. **Do NOT include the `Status: Approved by user` block yet** — Step 4 owns that.
+
+The template ends with an `<!-- audit-only-below — readers must stop here -->` anchor followed by §10 Decision Audit Trail. The anchor is mandatory — downstream agents (code-planner, code-plan-review-*) stop reading at this line.
+
+#### Step 1.4 — Scope Lint (hard block)
+
+Run a deterministic scope/length lint on the just-written draft. **Always run, no skip conditions.** This step is a hard block — freeze cannot proceed until the lint is clean (or the user explicitly Acknowledges each violation).
+
+Scope is mechanical only (five categories):
+
+1. **Implementation code in spec body** — useState/useEffect/useRef/useCallback bodies, if-else implementation branches, try-catch wrapping, for/while loop bodies, method bodies, JSX return blocks. Exception: §2 Data Model store-shape code fences are whitelisted.
+2. **§5 ADR single DEC-N narrative > 30 lines** (raw `wc -l`, code fences and tables included).
+3. **§7 Amendment row prose** — any cell containing `\n` (markdown line break) or bullet markers.
+4. **§6 Risks single row > 4 lines** — mitigation prose inflating a row.
+5. **Spec body length** — raw `wc -l` of content before the `<!-- audit-only-below -->` anchor. Default cap: 600 lines. HIGH-complexity override (750 lines) requires explicit user sign-off recorded in §0 metadata at Phase 0.5 or Phase 5.
+
+Full rules, regex patterns, whitelist details, and engine choice (Bash awk/grep + inline Claude precision pass; **Codex not used**) live in `references/scope-lint.md`. Read it before running the lint.
+
+On violation, surface each finding to the user with file:line and ask one of:
+- **Remove** — auto-trim the implementation code, keeping only interface/signature
+- **Move** — move the content to PR description / design-note (lint suggests destination, user confirms)
+- **Acknowledge** — explicit confirmation to keep as-is (used rarely; recorded in §10 with a note)
+
+Outputs (in the session dir):
+
+- `phase1-tech-spec-scope-lint.md` — the human-readable lint artifact (clean or violations list with locations)
+
+When clean, proceed to Step 1.5. When violations remain after user choices, do not proceed — surface "scope-lint blocked freeze" and wait.
 
 #### Step 1.5 — Codex Sanity-Check (advisory)
 
@@ -272,14 +307,26 @@ Stop and wait for explicit user approval. The file at this point is still `Statu
 
 Append the closing block — this is the freeze trigger. The protect-files hook reads `Status: Approved by user` and freezes the file.
 
+The freeze block has two parts split by the audit anchor:
+
+**Body side (immediately before `<!-- audit-only-below -->`):**
+
 ```
 ---
 Status: Approved by user
 Approved at: {YYYY-MM-DD HH:MM}
 Iterations: {N}
-Autonomy distribution: L1={count}, L2={count}, L3={count}
 Next phase input: phase1-spec.md + phase1-tech-spec.md (+ phase1-nltp.md if present)
 ```
+
+**Audit side (at the bottom of §10 Decision Audit Trail):**
+
+```
+---
+Autonomy distribution: L1={count}, L2={count}, L3={count}
+```
+
+Rationale: autonomy distribution is governance metadata — keep it on the audit side of the anchor so code-planner doesn't ingest it. `Status` / `Approved at` / `Iterations` / `Next phase input` remain on the body side because code-planner legitimately needs them to know the spec is frozen.
 
 The freeze block is intentionally separate from Step 3 so the user has a chance to read the compiled spec before it locks. Never auto-append in Step 3.
 
@@ -294,35 +341,36 @@ The freeze block is intentionally separate from Step 3 so the user has a chance 
 > Based on: phase1-spec.md (+ phase1-ui-outline.md, phase1-nltp.md)
 > Status: Draft
 > Scope: {Frontend only | Backend only | Both} {(+ mocking strategy) if applicable}
-> Method: Evidence-grounded autonomy ({N} rounds; L1/L2/L3 distribution)
+> Complexity: {Normal | HIGH (user-approved 750-line cap)}
 > Verdict: **{Ready to implement / Ready with caveats / Needs more discussion}**
 
 ## 1. Tech Stack & Patterns
 
 ### Reused
-| Capability | Library / Pattern | Evidence | Decided |
-|------------|-------------------|----------|---------|
-| {concern} | {name + version} | {file:line} | Autonomously / With user (confirmed) / With user (discussed) |
+| ID | Capability | Library / Pattern | Evidence | Rationale |
+|----|------------|-------------------|----------|-----------|
+| DEC-1 | {concern} | {name + version} | {file:line} | {one-line + UX-gate result} |
 
 ### New Dependencies
-| Library | Version | Justification | Evidence | Decided |
-|---------|---------|---------------|----------|---------|
-| {name} | {version} | {why existing stack can't cover} | {doc URL} | Autonomously / With user |
+| ID | Library | Version | Justification | Evidence | Rationale |
+|----|---------|---------|---------------|----------|-----------|
+| DEC-2 | {name} | {version} | {why existing stack can't cover} | {doc URL} | {one-line} |
 
 ## 2. Data Model & State
 
 ### Entities
-| Entity | Shape | Source | Lifecycle | Decided | Notes |
-|--------|-------|--------|-----------|---------|-------|
+| ID | Entity | Shape | Source | Lifecycle | Notes |
+|----|--------|-------|--------|-----------|-------|
+| DEC-3 | {name} | {shape} | {origin} | {lifecycle} | {} |
 
 ### Store Shape (if stateful)
 ```ts
-{ /* zustand slice or equivalent */ }
+{ /* zustand slice / state-machine type — shape only, no method bodies */ }
 ```
 
 ### API Contract (shape only)
 ```ts
-// Request / Response shape at the boundary
+// Request / Response type — no handler bodies
 ```
 
 ## 3. Data Flow
@@ -331,48 +379,95 @@ The freeze block is intentionally separate from Step 3 so the user has a chance 
 {source} → {transform} → {store} → {hook} → {view}
 ```
 
-| Aspect | Decision | Decided | Evidence |
-|--------|----------|---------|----------|
-| Data source | {fetch on mount / push / poll / etc.} | Autonomously / With user | {file:line or doc URL} |
-| Transform layer | {where + why} | Autonomously / With user | {} |
-| Store ownership | {global / page-scoped / component-local} | Autonomously / With user | {} |
+| ID | Aspect | Decision | Evidence | Rationale |
+|----|--------|----------|----------|-----------|
+| DEC-4 | Data source | {fetch on mount / push / poll / etc.} | {file:line or doc URL} | {} |
+| DEC-5 | Transform layer | {where + why} | {} | {} |
+| DEC-6 | Store ownership | {global / page-scoped / component-local} | {} | {} |
 
 ## 4. Non-functional Constraints
 
-| Category | Requirement | Measurable target | Verification |
-|----------|-------------|-------------------|--------------|
-| Performance | {} | {p95 < 300ms} | {profile / load test} |
-| Security | {} | {} | {} |
-| Compatibility | {} | {} | {} |
-| Observability | {} | {required logs / metrics / traces} | {dashboard / log query / trace ID} |
+| ID | Category | Requirement | Measurable target | Verification |
+|----|----------|-------------|-------------------|--------------|
+| DEC-7 | Performance | {} | {p95 < 300ms} | {profile / load test} |
+| DEC-8 | Security | {} | {} | {} |
+| DEC-9 | Compatibility | {} | {} | {} |
+| DEC-10 | Observability | {} | {required logs / metrics / traces} | {dashboard / log query / trace ID} |
 
-## 5. Integration Points
+## 5. Architecture Decisions (Detailed)
 
-| Target | Action | File:line | Decided | Notes |
-|--------|--------|-----------|---------|-------|
-| {service / store / hook / route / component} | modify / reuse / add | {path:line} | Autonomously / With user | {} |
+_For each non-trivial decision in §1-§4, write one ADR-style block. Single DEC-N block ≤ 30 lines (raw `wc -l` including code fences/tables). Refinement iteration history does not live here — only the final state. Skip entire §5 with "N/A — no material architecture decisions" when feature scope is purely additive without architectural impact._
 
-## 6. Risks & Mitigations
+### [DEC-N] {Decision title}
 
-| # | Risk | Likelihood | Impact | Mitigation | Rollback path | Decided |
-|---|------|-----------|--------|------------|---------------|---------|
+- **Context**: {why the decision is needed, ≤2 lines}
+- **Decision**: {what was chosen, ≤2 lines}
+- **Source verification**: {file:line in repo and/or external doc URL, ≤3 lines}
+- **Trade-offs**: {alternative vs chosen option, ≤3 lines — required for L2/L3; "N/A (L1 trivial reuse)" allowed for L1}
+- **Consequences**: {follow-on constraints or downstream implications, ≤2 lines — required for L2/L3; "N/A (L1)" allowed for L1}
 
-## 7. Phase1 Amendments
+(Repeat per DEC-N.)
 
-| # | Section | Change summary | Approved at |
-|---|---------|----------------|-------------|
+## 6. Integration Points
 
-## 8. Open Technical Questions
+### 6.1 New files
+- `{path}` — {purpose, ref DEC-N}
 
-### Blocking
+### 6.2 Modified files
+| ID | Target | Action | File:line | Evidence | Rationale |
+|----|--------|--------|-----------|----------|-----------|
+| INT-1 | {path} | modify / reuse / add | {path:line} | {} | {} |
+
+### 6.3 Intentionally unchanged (drift prevention)
+
+_Files in this feature's domain that are intentionally NOT modified. Anchors code-planner against unintended scope creep. Omit this subsection when there are no such files._
+
+- `{path}` — {why this file is in domain but stays unchanged}
+
+## 7. Risks & Mitigations
+
+_Lock-time / architectural risks only. Sequencing / test / rollback risks belong to code-plan §5 Risk Register. Each row ≤ 4 lines (mitigation cell single line ≤ 200 chars)._
+
+| ID | Risk | Likelihood | Impact | Mitigation | Rollback path |
+|----|------|-----------|--------|------------|---------------|
+| R-1 | {risk} | L/M/H | L/M/H | {} | {} |
+
+## 8. Phase1 Amendments
+
+_4-short-field structure. No prose paragraphs. Cell content single line ≤ 120 chars; no `\n`, no bullet markers._
+
+| # | Section | Change (≤120 chars) | Why (≤120 chars) | Affected DEC | Approved at |
+|---|---------|---------------------|------------------|--------------|-------------|
+
+## 9. Open Items
+
+### 9.1 Blocking technical questions (resolve before freeze)
 | # | Question | Impact | Proposed Options |
 |---|----------|--------|------------------|
 
-### Non-blocking
+### 9.2 Non-blocking
 | # | Question | Impact | Proposed Options |
 |---|----------|--------|------------------|
 
-## 9. Context & Evidence
+### 9.3 Routed to req-clarifier (out-of-scope here)
+| # | Item raised | Routed at | Note |
+|---|-------------|-----------|------|
 
-- {path:line} — {what a reader should notice}
+### 9.4 Open Items for Phase 2 (code-plan hand-off)
+
+_Items that this spec intentionally defers to code-planner. Distinct from §9.1/§9.2 — these are decided enough to freeze but require code-plan to verify during sequencing._
+
+| # | Item | Owner | Type |
+|---|------|-------|------|
+| O1 | {item} | code-planner | implementation-time verification |
+
+<!-- audit-only-below — readers (code-planner, code-plan-review-*, code-implementer) MUST stop here -->
+
+## 10. Decision Audit Trail
+
+_Autonomy-tier metadata, keyed by DEC-N. Not part of code-planner's input. Used by the human reviewer at freeze time and by Forced L1 Review._
+
+| DEC | Decided | Round | Source / Rubric note |
+|-----|---------|-------|----------------------|
+| DEC-1 | Autonomously \| With user (confirmed) \| With user (discussed) | {N} | {short rubric/source citation} |
 ```

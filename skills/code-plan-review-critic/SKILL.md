@@ -56,7 +56,7 @@ Read the planner-owned prompt contract fields, including the combined `Handoff` 
 ## Required Reads
 
 - `phase2-code-plan.md`
-- `phase1-tech-spec.md` (locked scope baseline for drift detection)
+- `phase1-tech-spec.md` (locked scope baseline for drift detection) — **read up to the `<!-- audit-only-below — readers must stop here -->` anchor**; content past the anchor (§10 Decision Audit Trail) is autonomy-tier governance metadata and is not review input. If the anchor is absent (grandfathered spec), read the file fully.
 - `phase1-spec.md`
 - `phase1-ui-outline.md` when present
 - `phase1-nltp.md` when present

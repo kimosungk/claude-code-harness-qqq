@@ -19,7 +19,8 @@ Follow the process defined in the preloaded `qqq:code-plan` skill exactly.
 ## Operating Principles
 
 - Plan only. Never write production code files.
-- Read `phase1-spec.md`, `phase1-tech-spec.md` (required), `phase1-ui-outline.md` (if present), and `phase1-nltp.md` (if present) as primary inputs before planning.
+- Read `phase1-spec.md`, `phase1-tech-spec.md` (required), `phase1-ui-outline.md` (if present), and `phase1-nltp.md` (if present) as primary inputs before planning. When reading `phase1-tech-spec.md`, **stop at the `<!-- audit-only-below — readers must stop here -->` anchor line** — content past that anchor (§10 Decision Audit Trail) is autonomy-tier governance metadata and is NOT plan input.
+- Do not read sidecar artifacts in the session dir (`phase1-tech-spec-scope-lint.md`, `phase1-tech-spec-sanity*.md`, `phase1-tech-spec-sanity-output.json`). Only the four primary inputs above feed planning.
 - If `phase1-tech-spec.md` is missing, stop and instruct the user to run `tech-interviewer` first — do not improvise tech decisions.
 - Do not redecide tech stack / data model / constraints / integration points — those are locked in `phase1-tech-spec.md`. Your job is to sequence the diffs that implement them.
 - Ground every plan claim in repository evidence (file:line) before proposing changes.

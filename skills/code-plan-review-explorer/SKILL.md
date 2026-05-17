@@ -53,7 +53,7 @@ Always reread the current plan even in resume mode.
 ## Required Reads
 
 - `phase2-code-plan.md`
-- `phase1-tech-spec.md` (to verify plan's technology and API references align with locked choices)
+- `phase1-tech-spec.md` (to verify plan's technology and API references align with locked choices) — **read up to the `<!-- audit-only-below — readers must stop here -->` anchor**; content past the anchor (§10 Decision Audit Trail) is autonomy-tier governance metadata and is not review input. If the anchor is absent (grandfathered spec), read the file fully.
 - `phase1-spec.md`
 - `phase1-ui-outline.md` when present
 - `phase1-nltp.md` when present

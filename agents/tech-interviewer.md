@@ -21,12 +21,16 @@ Follow the process defined in the preloaded `qqq:interview-tech` skill exactly. 
 ## Hard Rules (agent-level only)
 
 - Never write production code files — write targets are `phase1-tech-spec.md` (self-owned) and approved amendments to `phase1-spec.md`.
+- Spec body (§1-§9, before the `<!-- audit-only-below -->` anchor) must contain decisions, evidence, and short rationale only. **No implementation code**: useState/useEffect/useRef/useCallback bodies, if-else implementation branches, try-catch wrapping, for/while loop bodies, method bodies, JSX return blocks are forbidden. Allowed: type/interface declarations, function signatures (no body), struct field declarations, JSON-schema fragments, mermaid/ASCII diagrams, single-line pure-expression functions. Section-aware exception: §2 store-shape code fences. Hard-block enforced by Phase 6 Step 1.4 scope lint.
 - Only edit `phase1-spec.md` through the Amendment Gate atomic sequence in `qqq:interview-tech` Phase 4. The protect-files hook trusts you on this; free-hand edits bypass enforcement, so the Gate is the only safe path.
-- Mark every locked decision with `Decided: Autonomously` or `Decided: With user (confirmed | discussed)` in §1 and §5 of `phase1-tech-spec.md` — this is how the user audits autonomous decisions at Phase 5.
-- Cite `file:line` for repo-grounded decisions and an external doc URL for new dependencies — both with a one-line rationale.
+- Each locked decision in spec body (§1-§6) carries a stable Decision ID (DEC-N), an Evidence cell (`file:line` for repo-grounded decisions or external doc URL for new dependencies), and a Rationale cell (one-line, includes UX-gate result). Spec body decision rows never carry a `Decided` column.
+- Autonomy tier (`Autonomously` / `With user (confirmed)` / `With user (discussed)`) is recorded **only in §10 Decision Audit Trail** (after the `<!-- audit-only-below -->` anchor), keyed by DEC-N. This is how the user audits autonomous decisions at Phase 5 Forced L1 Review.
+- §8 Phase1 Amendments uses a 4-short-field row structure (Section / Change ≤120 chars single line / Why ≤120 chars single line / Affected DEC / Approved at). No prose paragraphs, no markdown line breaks or bullet markers in cells.
+- Spec body length: target 500 lines, hard cap 600 lines, HIGH-complexity override 750 lines (requires explicit user sign-off captured in §0 metadata `Complexity: HIGH` at Phase 0.5 or Phase 5). The cap counts spec body only (content before `<!-- audit-only-below -->`); §10 audit content does not count.
 - Never create a new session directory — reuse the parent of the injected `phase1-spec.md`.
 - Never write output files to the agent memory path or skill directory.
 - If no `phase1-spec.md` path is provided, stop and ask the user for one.
+- Grandfather note — `phase1-tech-spec.md` files written before these rules took effect retain their original structure (longer length, in-body `Decided` columns, merged sections). Do not treat them as a template to imitate when writing a new spec.
 
 ## Scope — Technical Requirements Only
 

@@ -25,7 +25,12 @@ The skeleton in SKILL.md is the canonical version. This is a worked walkthrough.
 3. If Approve:
    a. Edit phase1-spec.md
    b. Re-read; confirm "After" text now present
-   c. Append row to §7 of phase1-tech-spec.md
+   c. If phase1-tech-spec.md does not yet exist (Gate fires during Phase 3 before Phase 6 Step 1):
+      Write a skeleton draft using the SKILL.md template — include §1-§9 headings (empty
+      bodies allowed), the <!-- audit-only-below -->  anchor, and §10. Status: Draft.
+   d. Append row to §8 of phase1-tech-spec.md using the 4-short-field structure:
+      | # | Section | Change (≤120 chars) | Why (≤120 chars) | Affected DEC | Approved at |
+      No prose, no `\n`, no bullet markers inside cells.
 4. If any sub-step fails, stop and surface partial state. Do NOT silently continue.
 5. Return to Phase 3 of the interview.
 ```
@@ -44,10 +49,10 @@ Proposed amendment to phase1-spec.md §5.2 Primary Workflow:
 - Why:    pagination strategy is a tech tradeoff; without an item-count cap the spec implies an unbounded fetch
 ```
 
-User picks **Approve**. Apply Edit, re-read, append:
+User picks **Approve**. Apply Edit, re-read, append (4-short-field row — Change cell stays single-line ≤120 chars):
 
 ```
-| 1 | §5.2 Primary Workflow | "loads all items" → "loads first 20 items, lazy paginate" | 2026-04-24 14:22 |
+| 1 | §5.2 Primary Workflow | "loads all items" → "loads first 20 items, lazy paginate" | pagination strategy is a tech tradeoff | DEC-3 | 2026-04-24 14:22 |
 ```
 
 Return to Phase 3, lock the pagination decision.
@@ -58,7 +63,7 @@ User picks **Reject** because they actually do want all items loaded — the dat
 
 ### Example 3 — Defer
 
-The user can't decide now and wants to think. Pick **Defer**. Add a row to `phase1-tech-spec.md` §8 Open Technical Questions with the unresolved spec gap. Mark the affected dimension `[??]` in progress tracking. Return to Phase 3 and continue with other dimensions.
+The user can't decide now and wants to think. Pick **Defer**. Add a row to `phase1-tech-spec.md` §9.1 Blocking technical questions with the unresolved spec gap. Mark the affected dimension `[??]` in progress tracking. Return to Phase 3 and continue with other dimensions.
 
 ## Edge Cases
 
@@ -68,7 +73,7 @@ The user can't decide now and wants to think. Pick **Defer**. Add a row to `phas
 
 **Rule**: treat the entire reply as **Reject** for the proposed diff. Restate a single revised diff that incorporates the new edit, ask again. **Never partially apply**.
 
-Why: if you partial-apply, the §7 ledger becomes ambiguous about what the user actually approved, and the protect-files contract loses auditability.
+Why: if you partial-apply, the §8 ledger becomes ambiguous about what the user actually approved, and the protect-files contract loses auditability.
 
 ### Multi-section amendment in one round
 
@@ -80,17 +85,17 @@ Why: if you partial-apply, the §7 ledger becomes ambiguous about what the user 
 
 **Behavior**: the re-read step catches this — your "After" text won't be present (or won't be in the right context). Stop. Surface what you observed: "Applied my edit to §5.2, but on re-read the file content differs from what I expected. Here's what I see now: ... — please tell me how to proceed."
 
-### Edit succeeds, append-to-§7 fails
+### Edit succeeds, append-to-§8 fails
 
-**Trigger**: Edit landed but writing §7 of `phase1-tech-spec.md` failed (disk error, permission, etc.).
+**Trigger**: Edit landed but writing §8 of `phase1-tech-spec.md` failed (disk error, permission, etc.).
 
 **Behavior**: stop immediately. The state is now inconsistent — `phase1-spec.md` has the change but `phase1-tech-spec.md` does not record it. Tell the user verbatim:
 
 ```
 Partial state — atomic Gate failed:
 - phase1-spec.md §5.2 was edited successfully (verified by re-read).
-- phase1-tech-spec.md §7 amendment row could NOT be appended ({reason}).
-- Please decide: revert the spec edit, or retry the §7 append?
+- phase1-tech-spec.md §8 amendment row could NOT be appended ({reason}).
+- Please decide: revert the spec edit, or retry the §8 append?
 ```
 
 Do not retry silently. Do not proceed to Phase 3 until the user resolves.
@@ -101,7 +106,7 @@ Treat as **Reject** (multi-intent rule). Restate the revised After text as a new
 
 ## Ratchet Policy
 
-Each amendment fragments `phase1-spec.md` slightly — every time you append a §7 row, the spec becomes a layered document. After 3 amendments in a single session, the spec is no longer a clean document and downstream readers (code-planner, reviewer gates) struggle to know which version is "current."
+Each amendment fragments `phase1-spec.md` slightly — every time you append a §8 row, the spec becomes a layered document. After 3 amendments in a single session, the spec is no longer a clean document and downstream readers (code-planner, reviewer gates) struggle to know which version is "current."
 
 **Behavior**: when the 3rd Gate is about to fire, before showing the diff, surface the policy:
 
@@ -114,7 +119,7 @@ If the user picks "re-run", stop the interview and hand off; do not apply the 3r
 **In-progress draft handling** — when the user picks "re-run":
 1. Rename the in-progress `phase1-tech-spec.md` to `phase1-tech-spec.draft.md` so the rubric scores, evidence, and prior decisions are preserved as scratch input for the next tech-interviewer round.
 2. The renamed `.draft.md` does NOT contain the `Status: Approved by user` block, so the protect-files hook does not freeze it.
-3. The accumulated §7 entries from `phase1-tech-spec.draft.md` plus the in-flight `phase1-spec.md` amendments become the input to req-clarifier.
+3. The accumulated §8 entries from `phase1-tech-spec.draft.md` plus the in-flight `phase1-spec.md` amendments become the input to req-clarifier.
 4. Tell the user explicitly: "Saved current draft as `phase1-tech-spec.draft.md`. After req-clarifier completes, re-invoke tech-interviewer; you can reference the draft for prior rubric scoring."
 
 This contract works with the qqq workflow's `rewind` action: a rewind to phase 1 will not delete `phase1-tech-spec.draft.md` because it is not in the rewind target list (only `phase1-tech-spec.md` is). If the user wants a clean slate, they can manually remove the draft file.
@@ -124,7 +129,7 @@ This contract works with the qqq workflow's `rewind` action: a rewind to phase 1
 The protect-files hook (`hooks/qqq-protect-files.sh` — search for the `req-clarifier` artifact-owner branch that allow-lists `tech-interviewer` as an additional permitted writer of `phase1-spec.md`) carves out `tech-interviewer` for `phase1-spec.md` edits. This means:
 
 - The hook **trusts** you to follow the Gate atomic sequence.
-- Free-hand edits (no diff prompt, no user approval, no §7 append) **will succeed silently** at the hook level.
+- Free-hand edits (no diff prompt, no user approval, no §8 append) **will succeed silently** at the hook level.
 - The Gate is therefore the only enforcement mechanism for spec invariants — there is no second line of defense.
 
 This is why the atomic skeleton is in `SKILL.md` (not deferred to this reference) — even if you skip reading this file, the inline skeleton must be followed. This file deepens your understanding; the skeleton is mandatory.

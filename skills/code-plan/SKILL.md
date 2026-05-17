@@ -37,7 +37,12 @@ Turn an approved spec + tech spec + optional UI outline / NLTP into an actionabl
 
 ### Phase 1: Ground in Repository Evidence
 
-1. Read `phase1-spec.md` and `phase1-tech-spec.md` fully. Read `phase1-ui-outline.md` and `phase1-nltp.md` too when present.
+1. Read the four primary inputs only:
+   - `phase1-spec.md` — full read
+   - `phase1-tech-spec.md` — **read up to the `<!-- audit-only-below — readers must stop here -->` anchor line**; do not read past it. Content past the anchor (§10 Decision Audit Trail) is autonomy-tier governance metadata and is not plan input. If the anchor is absent (e.g., grandfathered spec written before the anchor convention), read the file fully — the anchor's absence indicates pre-rule format.
+   - `phase1-ui-outline.md` — full read when present
+   - `phase1-nltp.md` — full read when present
+   - **Do not read** sidecar artifacts in the session dir: `phase1-tech-spec-scope-lint.md`, `phase1-tech-spec-sanity*.md`, `phase1-tech-spec-sanity-output.json`, `phase1-tech-spec-history.md` (if present). These are tech-interviewer process artifacts, not plan input.
 2. Map the spec's must-have features to concrete codebase targets using Glob/Grep/Read:
    - Existing modules the change will extend
    - Patterns to mirror (naming, file layout, test style)

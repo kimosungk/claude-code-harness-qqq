@@ -54,7 +54,7 @@ Always reread the current plan.
 ## Required Reads
 
 - `phase2-code-plan.md`
-- `phase1-tech-spec.md` (locked structural decisions: DI strategy, package boundaries, store scope)
+- `phase1-tech-spec.md` (locked structural decisions: DI strategy, package boundaries, store scope) — **read up to the `<!-- audit-only-below — readers must stop here -->` anchor**; content past the anchor (§10 Decision Audit Trail) is autonomy-tier governance metadata and is not review input. If the anchor is absent (grandfathered spec), read the file fully.
 - `phase1-spec.md`
 - `phase1-ui-outline.md` when present
 - plan-referenced repo files that matter to structure or contracts
