@@ -104,7 +104,6 @@ schema_file="<plugin_root>/skills/code-plan-review-architect/references/verdict.
 codex exec \
   -m gpt-5.5 \
   -c 'model_reasoning_effort="xhigh"' \
-  -c 'service_tier="flex"' \
   --disable fast_mode \
   --sandbox read-only \
   --color never \
@@ -121,7 +120,7 @@ Per-skill flag rationale:
 - `-c 'model_reasoning_effort="xhigh"'` — architect runs at the deepest reasoning tier in the Phase 2 pipeline. Structural/contract decisions are the hardest to retract once the plan ships to implementation, so the per-round depth premium is justified despite the iteration loop's natural redundancy.
 - `--sandbox read-only` — Gate 2 never writes.
 
-For shared rationale (service_tier, fast_mode, color, ephemeral, output-schema semantics, output-last-message, -C, stdin form), the canonical pattern, plugin_root resolution, and the stdin-hang background — see `code-implement-review/references/codex-command.md`.
+For shared rationale (fast_mode, color, ephemeral, output-schema semantics, output-last-message, -C, stdin form), the canonical pattern, plugin_root resolution, and the stdin-hang background — see `code-implement-review/references/codex-command.md`.
 
 ## Persist
 

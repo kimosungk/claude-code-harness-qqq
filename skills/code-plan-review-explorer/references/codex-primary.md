@@ -107,7 +107,6 @@ schema_file="<plugin_root>/skills/code-plan-review-explorer/references/verdict.s
 codex exec \
   -m gpt-5.4 \
   -c 'model_reasoning_effort="high"' \
-  -c 'service_tier="flex"' \
   --disable fast_mode \
   --sandbox read-only \
   --color never \
@@ -124,7 +123,7 @@ Per-skill flag rationale:
 - `-c 'model_reasoning_effort="high"'` — Gate 1 needs `high` (not `medium`) because cross-checking plan claims against many cited file:line anchors benefits from broader attention; lower effort risks missing fabricated symbols.
 - `--sandbox read-only` — Gate 1 never writes.
 
-For shared rationale (service_tier, fast_mode, color, ephemeral, output-schema semantics, output-last-message, -C, stdin form), the canonical pattern, plugin_root resolution, and the stdin-hang background — see `code-implement-review/references/codex-command.md`.
+For shared rationale (fast_mode, color, ephemeral, output-schema semantics, output-last-message, -C, stdin form), the canonical pattern, plugin_root resolution, and the stdin-hang background — see `code-implement-review/references/codex-command.md`.
 
 ## Persist
 

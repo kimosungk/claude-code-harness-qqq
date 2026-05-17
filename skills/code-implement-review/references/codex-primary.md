@@ -84,7 +84,6 @@ schema_file="<plugin_root>/skills/code-implement-review/references/verdict.schem
 codex exec \
   -m gpt-5.5 \
   -c 'model_reasoning_effort="xhigh"' \
-  -c 'service_tier="flex"' \
   --disable fast_mode \
   --sandbox read-only \
   --color never \
@@ -101,7 +100,7 @@ Per-skill flag rationale:
 - `-c 'model_reasoning_effort="xhigh"'` — deepest reasoning tier. Phase 3 is the last gate before delivery, so per-call depth wins over per-call cost.
 - `--sandbox read-only` — review never writes.
 
-For shared rationale (service_tier, fast_mode, color, ephemeral, output-schema semantics, output-last-message, -C, stdin form), the canonical pattern, plugin_root resolution, and the stdin-hang background — see `codex-command.md` next to this file.
+For shared rationale (fast_mode, color, ephemeral, output-schema semantics, output-last-message, -C, stdin form), the canonical pattern, plugin_root resolution, and the stdin-hang background — see `codex-command.md` next to this file.
 
 ## Persist
 

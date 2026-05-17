@@ -110,7 +110,6 @@ schema_file="<plugin_root>/skills/code-plan-review-critic/references/verdict.sch
 codex exec \
   -m gpt-5.5 \
   -c 'model_reasoning_effort="high"' \
-  -c 'service_tier="flex"' \
   --disable fast_mode \
   --sandbox read-only \
   --color never \
@@ -127,7 +126,7 @@ Per-skill flag rationale:
 - `-c 'model_reasoning_effort="high"'` — Gate 3 catches what the iteration loop will then have to redo; `high` balances catch rate against per-call cost across the loop.
 - `--sandbox read-only` — Gate 3 never writes.
 
-For shared rationale (service_tier, fast_mode, color, ephemeral, output-schema semantics, output-last-message, -C, stdin form), the canonical pattern, plugin_root resolution, and the stdin-hang background — see `code-implement-review/references/codex-command.md`.
+For shared rationale (fast_mode, color, ephemeral, output-schema semantics, output-last-message, -C, stdin form), the canonical pattern, plugin_root resolution, and the stdin-hang background — see `code-implement-review/references/codex-command.md`.
 
 ## Persist
 

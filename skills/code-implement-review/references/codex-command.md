@@ -12,7 +12,6 @@ The qqq codex invocation always has this shape (per-agent overrides marked `<...
 codex exec \
   -m <MODEL> \
   -c 'model_reasoning_effort="<EFFORT>"' \
-  -c 'service_tier="flex"' \
   --disable fast_mode \
   --sandbox <SANDBOX> \
   --color never \
@@ -60,7 +59,6 @@ Argv-as-prompt is also fragile for multi-KB prompts (ARG_MAX, shell quoting, emb
 These flags are identical across all qqq codex calls. Per-skill files should not duplicate this rationale.
 
 - `-c 'model_reasoning_effort="<EFFORT>"'` — verified config key. The bare `reasoning_effort` form is silently ignored and the run falls back to the global default (typically `xhigh`). Always set this explicitly.
-- `-c 'service_tier="flex"'` — explicit flex tier routing. `service_tier` is documented in `developers.openai.com/codex/config-reference` with enum `flex | fast`. Combined with `--disable fast_mode`, defends against the doc gap on default tier behavior when the feature flag is off.
 - `--disable fast_mode` — equivalent to `-c 'features.fast_mode=false'` per `codex exec --help`. The user has globally disabled this via `codex features disable fast_mode`; the per-call form is kept for visibility and to survive any future config reset. Independent of model and effort — review quality is unaffected; only queue/latency tier changes.
 - `--color never` — strip ANSI from stdout and logs. Parsers and artifacts must not see escape codes.
 - `--ephemeral` — do not persist Codex session files to `$CODEX_HOME`. Each call is independent; resume across rounds is not used today.

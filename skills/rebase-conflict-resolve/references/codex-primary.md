@@ -103,7 +103,6 @@ schema_file="<plugin_root>/skills/rebase-conflict-resolve/references/resolution.
 codex exec \
   -m gpt-5.5 \
   -c 'model_reasoning_effort="high"' \
-  -c 'service_tier="flex"' \
   --disable fast_mode \
   --sandbox workspace-write \
   --color never \
@@ -120,7 +119,7 @@ Per-skill flag rationale:
 - `-c 'model_reasoning_effort="high"'` — `high` balances catch rate against per-call cost. Resolution errors are recoverable (the user can abort the rebase), so `xhigh` is not warranted.
 - `--sandbox workspace-write` — the resolver writes resolved files inside the worktree. This is the only qqq codex skill that writes; all other codex calls are read-only.
 
-For shared rationale (service_tier, fast_mode, color, ephemeral, output-schema semantics, output-last-message, -C, stdin form), the canonical pattern, plugin_root resolution, and the stdin-hang background — see `code-implement-review/references/codex-command.md`.
+For shared rationale (fast_mode, color, ephemeral, output-schema semantics, output-last-message, -C, stdin form), the canonical pattern, plugin_root resolution, and the stdin-hang background — see `code-implement-review/references/codex-command.md`.
 
 ## Persist
 

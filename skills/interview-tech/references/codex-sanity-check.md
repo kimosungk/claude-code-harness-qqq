@@ -95,7 +95,6 @@ schema_file="<plugin_root>/skills/interview-tech/references/sanity-check.schema.
 codex exec \
   -m gpt-5.4 \
   -c 'model_reasoning_effort="medium"' \
-  -c 'service_tier="flex"' \
   --disable fast_mode \
   --sandbox read-only \
   --color never \
@@ -114,7 +113,7 @@ Per-skill flag rationale (intentionally lighter than Phase 2/3 reviewers):
 
 If quota pressure tightens further, `gpt-5.4-mini` is a documented fallback choice (see `marketplaces/openai-codex/.../codex-rescue.md`); switch by editing the `-m` flag here.
 
-For shared rationale (service_tier, fast_mode, color, ephemeral, output-schema semantics, output-last-message, -C, stdin form), the canonical pattern, plugin_root resolution, and the stdin-hang background — see `code-implement-review/references/codex-command.md`.
+For shared rationale (fast_mode, color, ephemeral, output-schema semantics, output-last-message, -C, stdin form), the canonical pattern, plugin_root resolution, and the stdin-hang background — see `code-implement-review/references/codex-command.md`.
 
 ## Persist
 
