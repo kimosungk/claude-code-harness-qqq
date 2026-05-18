@@ -22,11 +22,15 @@ Context files:
    which codex
    ```
 2. Round `k` comes from the `Round:` label; only fall back to scanning `phase3-codex-review-*.md` and `phase3-claude-review-*.md` (default `1`) when running in legacy bare-path mode.
-3. Gather review inputs:
+3. Gather review inputs (scope: working-tree):
    ```bash
-   git diff --stat
-   git diff
+   git status --porcelain    # tracked + untracked overview
+   git diff --stat HEAD      # tracked changes summary (staged + unstaged combined)
+   git diff HEAD             # tracked changes full diff (staged + unstaged combined)
    ```
+   - `git status --porcelain` enumerates tracked-with-changes paths and untracked-new paths in one pass.
+   - `git diff HEAD` is the unified working-tree-vs-HEAD diff. It covers staged and unstaged in one command and closes the gap where a manually staged file is invisible to `git diff` alone.
+   - Untracked file paths feed the prompt manifest under "Current working diff"; untracked file bodies are intentionally not inlined. If Codex needs an untracked file's contents to judge, it must say so in its review — the collector does not infer inclusion.
 4. Optionally read 1-3 highly changed files if the diff alone is ambiguous.
 
 ## Output Schema
@@ -47,8 +51,14 @@ You are reviewing an implementation diff. Return JSON conforming to the supplied
 2. Approved implementation plan (frozen):
 <paste phase2-code-plan.md>
 
-3. Current working diff:
-<paste git diff --stat + the full git diff or focused hunks>
+3. Current working diff (scope: working-tree):
+
+Tracked changes:
+<paste `git diff --stat HEAD`>
+<paste `git diff HEAD` — full diff, or focused hunks when truncation is needed>
+
+Untracked files (paths only — bodies intentionally omitted):
+<list untracked paths from `git status --porcelain | awk '$1=="??"{print $2}'`, one per line; "(none)" if empty>
 
 ## Review lanes
 - Architecture — fits existing patterns, no unjustified new structures
@@ -108,7 +118,10 @@ Always write `<session_dir>/phase3-codex-review-{k}.md`. The file is markdown, n
 
 On success (Codex exit 0 and `$out_file` non-empty):
 1. Validate: parse `$out_file` as JSON. If it does not parse or fails the schema (Codex normally enforces this, but verify), treat as failure (see below).
-2. Render: write the artifact with this header followed by markdown sections derived from the JSON.
+2. Compute the header counts from the same git output already gathered in Preflight step 3:
+   - `n_tracked` = number of paths changed vs HEAD (e.g., `git diff --name-only HEAD | wc -l`)
+   - `n_untracked` = number of `??` entries (e.g., `git status --porcelain | awk '$1=="??"' | wc -l`)
+3. Render: write the artifact with this header followed by markdown sections derived from the JSON.
 
 ```markdown
 # Phase 3 Implementation Review
@@ -116,6 +129,8 @@ On success (Codex exit 0 and `$out_file` non-empty):
 - Reviewer engine: Codex (gpt-5.5, model_reasoning_effort=xhigh)
 - Mode: primary
 - Round: {k}
+- Review scope: working-tree
+- Review input: tracked={n_tracked}, untracked={n_untracked}
 - Verdict: {verdict}
 
 ## Lanes

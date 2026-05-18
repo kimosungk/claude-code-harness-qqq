@@ -31,13 +31,14 @@ Round: <integer k>                                     # required
 Codex artifact: <abs>/phase3-codex-review-{k}.md       # required when Codex path is taken
 Claude fallback artifact: <abs>/phase3-claude-review-{k}.md   # required when fallback is taken
 Review policy: codex-first                             # informational
+Review scope: working-tree                             # optional; defaults to working-tree, rejects other values today
 Plan fingerprint: sha256:<digest>                      # optional, audit aid
 Implementation log: <abs>/phase3-implement-log.md      # optional, for cross-reference
 ```
 
 Two distinct artifact labels (one per engine) are mandatory because the engine path determines the filename (`phase3-codex-review-*.md` vs `phase3-claude-review-*.md`). A single `Artifact:` field would silently mismatch on fallback.
 
-**Backward compatibility**: If the caller's prompt is a bare absolute path with no `Plan:` label, treat it as legacy: derive `Session dir = dirname(<path>)`, scan existing `phase3-*-review-*.md` to compute `Round = max+1` (default 1), and synthesize the artifact paths from `Session dir` + `Round`. Log the legacy fallback in the artifact header so the audit trail makes the input shape clear.
+**Backward compatibility**: If the caller's prompt is a bare absolute path with no `Plan:` label, treat it as legacy: derive `Session dir = dirname(<path>)`, scan existing `phase3-*-review-*.md` to compute `Round = max+1` (default 1), synthesize the artifact paths from `Session dir` + `Round`, and default `Review scope` to `working-tree`. Log the legacy fallback in the artifact header so the audit trail makes the input shape clear.
 
 ## Hard Rules
 
@@ -49,6 +50,7 @@ Two distinct artifact labels (one per engine) are mandatory because the engine p
   - Claude fallback: write to the `Claude fallback artifact` path (pattern `phase3-claude-review-{k}.md`)
 - Each artifact must identify the authoring engine in its header.
 - Final verdict must be exactly `OKAY` or `REJECT`.
+- Reject `Review scope` values other than `working-tree`. The reserved values `base:<branch>` and `commit:<sha>` are not implemented today; if seen, persist a clear artifact note (engine: none, mode: rejected-scope) and return `REJECT` without invoking Codex.
 
 ## Workflow
 

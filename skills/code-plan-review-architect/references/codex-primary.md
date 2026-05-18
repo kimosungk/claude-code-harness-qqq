@@ -157,4 +157,4 @@ On success (Codex exit 0 and `$out_file` is valid JSON conforming to the schema)
 {sections.evidence}
 ```
 
-On failure: same fallback policy as Gate 1. Consult `code-implement-review/references/fallback-policy.md` for the allowed-reasons list. When persisting a Codex failure stub before fallback, keep the standard Phase 2 Gate Detail header (with `Engine: Codex`, `Outcome: FAILURE — falling back to Claude`) and write the canonical failure body documented in `code-implement-review/references/codex-failure-stub.md`.
+On failure: same fallback policy as Gate 1. Consult `code-implement-review/references/fallback-policy.md` for the category → fallback-allowed mapping. When persisting a Codex failure stub before fallback, keep the standard Phase 2 Gate Detail header (with `Engine: Codex`, `Mode: primary`) and write the canonical failure body documented in `code-implement-review/references/codex-failure-stub.md`. The body fills in `Outcome`, `Failure category`, and `Fallback allowed`; the Phase 2 header must not duplicate or contradict those values. If `Fallback allowed = no`, return `REJECT` with the stub as the canonical artifact.

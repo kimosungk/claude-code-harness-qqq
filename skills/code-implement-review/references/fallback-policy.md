@@ -2,27 +2,31 @@
 
 Read this only if `codex` is missing or the Codex attempt failed.
 
-Claude fallback is allowed only for infrastructure failures.
+Claude fallback is allowed only when the failure category is infrastructure-class. The mapping below is authoritative; do not paper over `bug`-class failures with a fallback.
 
-## Allowed Fallback Reasons
+## Category → Fallback Mapping (authoritative)
 
-- `which codex` fails
-- auth failure
-- quota/rate-limit exhaustion
-- model unavailable / service overloaded
-- transport/runtime failure
+Categorize the failure using `codex-failure-stub.md` first, then look up the category here.
 
-## Disallowed Fallback Reasons
+| Category | Fallback allowed | Rationale |
+|---|---|---|
+| `missing_cli` | yes | binary absent — environment problem |
+| `auth` | yes | infra-class — credential/session issue |
+| `quota` | yes | infra-class — rate/quota/billing |
+| `model_unavailable` | yes | infra-class — provider-side capacity |
+| `transport` | yes | infra-class — network/runtime |
+| `timeout` | yes | infra-class — wall-clock budget exceeded |
+| `unsupported_config` | no | bug — fix the skill's config, do not paper over |
+| `schema` | no | bug — model output failed schema; REJECT |
+| `unknown` | no | uncategorized — REJECT and extend categorization patterns |
 
-- Codex returned a normal but weak answer
-- Codex returned malformed but semantically review-like output that still needs human judgment
-- you simply prefer not to use Codex
+If `Fallback allowed = yes`, the calling skill may run its Claude fallback path. Otherwise it must persist the failure stub and return `REJECT`.
 
-## Useful stderr/stdout Hints
+A single `unknown` is not a workflow defect, but if the same shape recurs, **extend the patterns in `codex-failure-stub.md`** instead of relaxing this table.
 
-- Auth: `login`, `auth`, `unauthorized`, `forbidden`, `credential`
-- Quota / rate limit: `rate limit`, `quota`, `capacity`, `too many requests`, `429`
-- Model/service unavailable: `model unavailable`, `overloaded`, `service unavailable`, `503`
-- Runtime / transport: `timed out`, `connection reset`, `transport`, `broken pipe`
+## Hard rules
 
-If the failure matches an allowed reason, fallback may proceed. Otherwise stop with `REJECT`.
+- Do not fallback because Codex returned a normal but weak answer.
+- Do not fallback because Codex returned malformed but semantically review-like output that still needs human judgment.
+- Do not fallback because you simply prefer not to use Codex.
+- Do not edit this mapping per-skill. If a category needs different behavior in a specific skill, the skill should detect and reject before getting here.
