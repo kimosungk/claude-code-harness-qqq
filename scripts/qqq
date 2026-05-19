@@ -111,10 +111,18 @@ current_branch() {
 }
 
 # Repo slug = leader repo dirname. Used as a worktree namespace key.
+#
+# `git rev-parse --git-common-dir` may return a relative path (`.git`) when
+# cwd is the leader checkout itself, or an absolute path (`/abs/.../.git`)
+# when cwd is a linked worktree. Both must collapse to the same leader-repo
+# basename. The earlier version only handled the absolute case and returned
+# "." in the relative case — silently corrupting paths derived from this slug.
 repo_slug() {
   local common toplevel
   common=$(git rev-parse --git-common-dir 2>/dev/null) || return 1
-  # git-common-dir points at <leader>/.git ; the leader repo is its parent.
+  if [[ "$common" != /* ]]; then
+    common=$(cd "$common" 2>/dev/null && pwd) || return 1
+  fi
   toplevel=$(dirname "$common")
   basename "$toplevel"
 }
@@ -541,8 +549,12 @@ cmd_merge_mr() {
 # Gates:
 #   G5  claude --version >= required                          (cheap)
 #   G6  fzf / jq / glab / sha256                              (cheap)
-#   G1  --bg + --worktree + --name + --append-system-prompt-file 4-fold combo
-#   G2  /qqq:<skill> first-prompt dispatch resolves to a skill
+#   G1  v3.2 dispatch CLI options: --bg + --worktree + --name +
+#       --permission-mode bypassPermissions + positional prompt
+#       (the --append-system-prompt-file slot of v3.1 was replaced by the
+#        positional prompt in v3.2; agent dispatch itself is verified by G2)
+#   G2  /qqq:<skill> first-prompt dispatch resolves to a skill (covers the
+#       skill-preload path that --agent qqq:<name> relies on)
 #   G4  claude stop + claude --resume --print (regression guard, F1=b otherwise)
 #   G3  claude attach conversation continuity (manual — TTY input required)
 #
@@ -574,6 +586,11 @@ _verify_extract_short_id() {
 
 # Wait for a bg session's state to transition past "working". Polls
 # state.json every 2s for up to $2 seconds. Returns 0 on settle, 1 on timeout.
+#
+# `done` is the modern Claude Code terminal state for a settled bg session
+# (observed on 2.1.144 — a short prompt with no follow-up settles to "done"
+# rather than "idle"). All four documented terminal-ish values are accepted
+# so this gate doesn't lag the CLI's state vocabulary.
 _verify_wait_settled() {
   local short="$1" max_s="${2:-60}" elapsed=0 state
   local state_path="$QQQ_JOBS_DIR/$short/state.json"
@@ -581,7 +598,7 @@ _verify_wait_settled() {
     [[ -f "$state_path" ]] || return 1
     state=$(jq -r '.state // ""' "$state_path" 2>/dev/null)
     case "$state" in
-      idle|stopped|exited) return 0 ;;
+      idle|stopped|exited|done) return 0 ;;
     esac
     sleep 2
     elapsed=$(( elapsed + 2 ))
@@ -590,16 +607,84 @@ _verify_wait_settled() {
 }
 
 # Best-effort teardown — never fails the test on cleanup errors.
+#
+# SAFETY: the `rm -rf "$wt_path"` line below has destroyed a main checkout once
+# (see incident in commit history). That happened because $wt_path was derived
+# from state.json's `.cwd` field, which under some dispatch shapes resolved to
+# the leader checkout itself rather than the disposable worktree. Three guards
+# now protect against that recurrence:
+#   1. Path must contain "/.claude/worktrees/" (the well-known Claude-managed
+#      worktree namespace). Anything else is refused.
+#   2. Path must NOT equal the current leader checkout or any of its ancestors
+#      ($PWD up to /). A repo top-level can never legitimately be a teardown
+#      target.
+#   3. Path must NOT be a recognized git toplevel for a worktree that isn't
+#      under /.claude/worktrees/.
+# All three guards fail-open (skip teardown) — better to leak a disposable
+# worktree than to delete real work.
 _verify_teardown() {
   local short="$1" wt_path="$2"
   [[ -n "$short" ]] && claude rm "$short" >/dev/null 2>&1 || true
-  if [[ -n "$wt_path" && -d "$wt_path" ]]; then
-    git worktree remove --force "$wt_path" >/dev/null 2>&1 || true
-    rm -rf "$wt_path" >/dev/null 2>&1 || true
+  [[ -z "$wt_path" ]] && return 0
+  [[ ! -d "$wt_path" ]] && return 0
+
+  # Guard 1a: namespace check on the literal path. Guards against the obvious
+  # mistake of passing a non-worktree directory.
+  case "$wt_path" in
+    */.claude/worktrees/*) ;;
+    *)
+      warn "verify teardown refused — wt_path outside /.claude/worktrees/: $wt_path"
+      return 0
+      ;;
+  esac
+
+  # Guard 1b: re-check namespace on the symlink-resolved absolute path. A
+  # symlink under .claude/worktrees/ that points to / (or any non-worktree
+  # location) would pass Guard 1a but escape into critical territory after
+  # `cd`. `pwd -P` collapses symlinks; we require the resolved path to still
+  # live under a `.claude/worktrees/` namespace.
+  local abs_wt
+  abs_wt=$(cd "$wt_path" 2>/dev/null && pwd -P) || return 0
+  case "$abs_wt" in
+    */.claude/worktrees/*) ;;
+    *)
+      warn "verify teardown refused — resolved path escapes worktree namespace: $wt_path → $abs_wt"
+      return 0
+      ;;
+  esac
+
+  # Guard 2: never equal cwd, repo root, $HOME, or any of their ancestors
+  local pwd_abs="${PWD}"
+  if [[ -n "$pwd_abs" && ( "$abs_wt" == "$pwd_abs" || "$pwd_abs" == "$abs_wt"/* ) ]]; then
+    warn "verify teardown refused — wt_path equals or contains cwd: $abs_wt"
+    return 0
   fi
+  if [[ "$abs_wt" == "$HOME" || "$abs_wt" == "/" ]]; then
+    warn "verify teardown refused — wt_path is HOME or root: $abs_wt"
+    return 0
+  fi
+  # Refuse if it's the leader checkout itself
+  local leader
+  leader=$(cd "$abs_wt" 2>/dev/null && git rev-parse --git-common-dir 2>/dev/null) || true
+  if [[ -n "$leader" ]]; then
+    [[ "$leader" != /* ]] && leader=$(cd "$abs_wt" && cd "$leader" 2>/dev/null && pwd) || true
+    local leader_root
+    leader_root=$(dirname "$leader")
+    if [[ "$abs_wt" == "$leader_root" ]]; then
+      warn "verify teardown refused — wt_path equals leader checkout: $abs_wt"
+      return 0
+    fi
+  fi
+
+  git worktree remove --force "$abs_wt" >/dev/null 2>&1 || true
+  rm -rf "$abs_wt" >/dev/null 2>&1 || true
 }
 
-# G1: dispatch a bg session with the full 4-fold combo + verify state.json + settle.
+# G1: dispatch a bg session via the v3.2 dispatch CLI options + verify state.json + settle.
+#     The earlier "4-fold combo" included `--append-system-prompt-file`, which v3.2 retired
+#     in favor of inline positional prompt; this gate now exercises the real runtime path
+#     used by primitive_dispatch_phase (sans --agent — agent dispatch is verified by G2's
+#     skill resolution).
 # G2: dispatch a slash skill that is guaranteed inert when no rebase is in
 #     progress (`/qqq:rebase-conflict-resolve` returns BLOCKED with no side
 #     effects per skills/rebase-conflict-resolve/SKILL.md). Run INSIDE the
@@ -607,25 +692,27 @@ _verify_teardown() {
 #     that worktree (it gets torn down).
 _verify_g1_g2() {
   local tag="qqq-verify-$(date +%s)-$$"
-  local wt_path="$HOME/.claude/worktrees/$(repo_slug)/$tag"
-  local sys_prompt_file
-  sys_prompt_file=$(mktemp -t qqq-verify-sys.XXXXXX) || return 1
-  printf 'test marker: QQQVERIFY_MARKER_OK\n' > "$sys_prompt_file"
+  # `claude --worktree <tag>` creates the worktree at a CLI-chosen path
+  # (observed: <repo_root>/.claude/worktrees/<tag>) that we cannot reliably
+  # predict from this side. We resolve the real path after dispatch by reading
+  # state.json's `.cwd`. Initialize blank so a pre-resolve failure doesn't
+  # accidentally pass a stale guess into _verify_teardown.
+  local wt_path=""
 
-  verify_log G1 "creating bg session in disposable worktree ($tag)"
+  verify_log G1 "creating bg session via v3.2 dispatch options ($tag)"
   local out short
-  # 4-fold combo: --bg + --worktree + --name + --append-system-prompt-file
+  # v3.2 CLI options used by primitive_dispatch_phase: --bg + --worktree +
+  # --name + --permission-mode bypassPermissions + positional prompt
+  # (the latter replaced the retired --append-system-prompt-file).
   out=$(claude --bg \
                --worktree "$tag" \
                --name "$tag" \
-               --append-system-prompt-file "$sys_prompt_file" \
+               --permission-mode bypassPermissions \
                "say only the word READY and stop" 2>&1) || {
-    verify_log G1 "FAIL — claude dispatch returned non-zero"
+    verify_log G1 "FAIL — v3.2 dispatch returned non-zero"
     printf '%s\n' "$out" | sed 's/^/    /'
-    rm -f "$sys_prompt_file"
     return 1
   }
-  rm -f "$sys_prompt_file"
 
   short=$(_verify_extract_short_id "$out") || {
     verify_log G1 "FAIL — no 'backgrounded · <id>' in dispatch output"
@@ -643,24 +730,58 @@ _verify_g1_g2() {
   done
   if [[ ! -f "$QQQ_JOBS_DIR/$short/state.json" ]]; then
     verify_log G1 "FAIL — state.json never appeared"
-    _verify_teardown "$short" "$wt_path"
+    _verify_teardown "$short" ""
     return 1
   fi
 
-  # Wait for the session to settle (idle/stopped/exited).
+  # Wait for the session to settle (idle/stopped/exited/done) BEFORE resolving
+  # the worktree path. `claude --worktree <tag>` creates the worktree
+  # asynchronously: state.json may appear with `.cwd` still pointing at the
+  # caller's cwd (the leader checkout) while worktree creation is in flight.
+  # Resolving cwd at that race window is what destroyed the leader checkout
+  # in the pre-safety-guard incident (state.json claimed leader; teardown ran
+  # rm -rf against it). Waiting for settle ensures `.cwd` reflects the final
+  # session cwd.
   if ! _verify_wait_settled "$short" 120; then
     verify_log G1 "FAIL — session never settled past 'working' in 120s"
-    _verify_teardown "$short" "$wt_path"
+    _verify_teardown "$short" ""
     return 1
   fi
-  verify_log G1 "PASS — 4-fold combo + state.json + settle"
+
+  # Now resolve the actual worktree path. state.json exposes TWO related
+  # fields: `.cwd` (the *caller's* working directory at dispatch time — i.e.
+  # the leader checkout) and `.worktreePath` (the actual worktree Claude
+  # Code created for this session, populated when --worktree was passed).
+  # We must use `.worktreePath`. Using `.cwd` was the root cause of the
+  # pre-safety-guard incident that destroyed the leader checkout: rm -rf
+  # against `.cwd` is rm -rf against the main repo.
+  wt_path=$(jq -r '.worktreePath // ""' "$QQQ_JOBS_DIR/$short/state.json" 2>/dev/null)
+  if [[ -z "$wt_path" || ! -d "$wt_path" ]]; then
+    verify_log G1 "FAIL — state.json has no usable .worktreePath (.worktreePath=$wt_path)"
+    _verify_teardown "$short" ""
+    return 1
+  fi
+  case "$wt_path" in
+    */.claude/worktrees/*) ;;
+    *)
+      verify_log G1 "FAIL — .worktreePath outside /.claude/worktrees/: $wt_path"
+      _verify_teardown "$short" ""
+      return 1
+      ;;
+  esac
+  verify_log G1 "PASS — v3.2 CLI options (--bg + --worktree + --name + bypassPermissions + positional) + state.json + settle"
 
   # G2: dispatch INSIDE the disposable worktree using a guard-first skill.
   # `/qqq:rebase-conflict-resolve` returns BLOCKED when no rebase is in
   # progress (which is the case in a fresh worktree). No project files touched.
+  # bypassPermissions matches the v3.2 dispatch shape so the skill body doesn't
+  # stall on permission prompts.
   verify_log G2 "dispatching /qqq:rebase-conflict-resolve inside disposable worktree"
   local g2_out g2_short
-  g2_out=$(cd "$wt_path" && claude --bg --name "$tag-g2" "/qqq:rebase-conflict-resolve" 2>&1) || {
+  g2_out=$(cd "$wt_path" && claude --bg \
+                                   --name "$tag-g2" \
+                                   --permission-mode bypassPermissions \
+                                   "/qqq:rebase-conflict-resolve" 2>&1) || {
     verify_log G2 "FAIL — G2 dispatch returned non-zero"
     printf '%s\n' "$g2_out" | sed 's/^/    /'
     _verify_teardown "$short" "$wt_path"
@@ -672,8 +793,12 @@ _verify_g1_g2() {
     _verify_teardown "$short" "$wt_path"
     return 1
   }
-  if ! _verify_wait_settled "$g2_short" 120; then
-    verify_log G2 "FAIL — G2 session never settled in 120s"
+  # 240s ceiling for G2 — the rebase-conflict-resolve skill has progressive
+  # disclosure (multiple reference reads) plus a `which codex` + git-state
+  # preflight before it returns BLOCKED. On opus/sonnet that easily exceeds
+  # the 120s envelope used for the bare G1 dispatch.
+  if ! _verify_wait_settled "$g2_short" 240; then
+    verify_log G2 "FAIL — G2 session never settled in 240s"
     _verify_teardown "$g2_short" ""
     _verify_teardown "$short" "$wt_path"
     return 1
@@ -979,7 +1104,7 @@ usage: qqq [command] [args]
   stop   [<id>]        claude stop   (fzf if no id)
   rm     [<id>]        claude rm     (fzf if no id)
   merge-mr             Run /qqq:merge-mr in current worktree
-  verify               Cheap smoke tests (G5/G6 now; G1..G4 in Task #13)
+  verify               Smoke tests (G5/G6 cheap; G1/G2 live; G4 regression; G3 manual)
   -h, --help           Show this help
 
 Phase commands enforce F1=b (new bg session per phase) + CLI-9 race-free dispatch.

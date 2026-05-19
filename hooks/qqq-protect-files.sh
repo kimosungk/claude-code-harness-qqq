@@ -29,13 +29,30 @@ block() {
   exit 2
 }
 
-# Bash arm — catch redirect/cp/mv/rm that targets the archive even when no
-# tool_input.file_path is present.
+# Bash arm — catch only destructive verbs (rm/rmdir/shred) targeting the
+# archive. Earlier versions used a broad substring match (*claude-works-completed/*)
+# which had two failure modes:
+#   1. legitimate merge-mr archive (`git mv claude-works/x claude-works-completed/x`)
+#      was blocked, breaking Phase 3 → merge handoff;
+#   2. any benign command merely *mentioning* the path (echo, grep, ls) was blocked,
+#      causing operator friction.
+# D1− principle: hooks are a light safety net, not a security boundary. Keep
+# the catch narrow to obviously-destructive intent; rely on Edit/Write arm for
+# silent-mutation prevention by the LLM.
 command_str=$(json_get '.tool_input.command')
 if [[ -n "$command_str" ]]; then
-  case "$command_str" in
-    *claude-works-completed/*)
-      block "Bash command targets claude-works-completed/* (frozen): $command_str"
+  # Extract the first word after stripping leading whitespace and any inline
+  # env-var prefixes (e.g. `FOO=bar rm -rf …` → first token `rm`).
+  first_token=$(printf '%s' "$command_str" \
+    | sed -E 's/^[[:space:]]+//; s/^([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]+[[:space:]]+)+//' \
+    | awk '{print $1}')
+  case "$first_token" in
+    rm|rmdir|shred|/bin/rm|/usr/bin/rm|/bin/rmdir|/usr/bin/rmdir)
+      case "$command_str" in
+        *claude-works-completed/*)
+          block "destructive command targets claude-works-completed/* (frozen): $command_str"
+          ;;
+      esac
       ;;
   esac
 fi
