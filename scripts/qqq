@@ -40,6 +40,14 @@ readonly QQQ_REQUIRED_VERSION="2.1.139"
 readonly QQQ_JOBS_DIR="${HOME}/.claude/jobs"
 readonly QQQ_WORKS_SUBDIR="claude-works"
 
+# Double-tap Ctrl+C window. fzf maps both ESC and Ctrl+C to "no selection"
+# (both produce exit code 130 with empty stdout), so we can't distinguish
+# them per-pick. Instead we install a process-level SIGINT trap that quits
+# the whole TUI when Ctrl+C arrives twice within this many seconds. A single
+# Ctrl+C still falls back to "pop one menu level" (same as ESC).
+readonly QQQ_CTRL_C_DOUBLE_TAP_S=2
+QQQ_LAST_SIGINT=0   # seconds-epoch of the previous SIGINT
+
 # ---------------------------------------------------------------------------
 # Logging helpers
 # ---------------------------------------------------------------------------
@@ -47,6 +55,22 @@ readonly QQQ_WORKS_SUBDIR="claude-works"
 err() { printf '[qqq] error: %s\n' "$*" >&2; }
 warn() { printf '[qqq] warn: %s\n' "$*" >&2; }
 note() { printf '[qqq] %s\n' "$*" >&2; }
+
+# SIGINT handler — double-tap quit. Single Ctrl+C is intercepted (so it does
+# NOT propagate up and kill the script); a second Ctrl+C within
+# QQQ_CTRL_C_DOUBLE_TAP_S seconds quits the whole process. Installed once at
+# TUI entry via `trap _tui_sigint INT`.
+_tui_sigint() {
+  local now
+  now=$(date +%s 2>/dev/null) || now=0
+  if (( now - QQQ_LAST_SIGINT < QQQ_CTRL_C_DOUBLE_TAP_S )); then
+    printf '\n[qqq] Ctrl+C twice — quitting TUI\n' >&2
+    exit 130
+  fi
+  QQQ_LAST_SIGINT="$now"
+  printf '\n[qqq] (Ctrl+C again within %ss to quit; ESC pops one level)\n' \
+    "$QQQ_CTRL_C_DOUBLE_TAP_S" >&2
+}
 die() { err "$*"; exit 1; }
 
 # ---------------------------------------------------------------------------
@@ -485,13 +509,19 @@ render_phase0_issue() {
 # Primitives
 # ---------------------------------------------------------------------------
 
-# build_initial_prompt <session_dir> [<brief_text>] [<issue_file>]
+# build_initial_prompt <session_dir> [<brief_text>] [<issue_file>] [<iteration>]
 # Assembles the first-turn user message handed to an --agent session.
-# Always emits a `session_dir=<abs>` line; brief and issue sections are added
-# only when their inputs are non-empty.
+# Always emits a `session_dir=<abs>` line; brief, issue, and iteration sections
+# are added only when their inputs are non-empty. `iteration` becomes an
+# `ITERATION=<N>` line right after `session_dir` so phase agents that consume
+# an iteration count (currently code-planner and code-implementer) can parse it
+# from the first user turn.
 build_initial_prompt() {
-  local session_dir="$1" brief="${2:-}" issue_file="${3:-}"
+  local session_dir="$1" brief="${2:-}" issue_file="${3:-}" iteration="${4:-}"
   printf 'session_dir=%s\n' "$session_dir"
+  if [[ -n "$iteration" ]]; then
+    printf 'ITERATION=%s\n' "$iteration"
+  fi
   if [[ -n "$brief" ]]; then
     printf '\n[brief]\n%s\n' "$brief"
   fi
@@ -501,7 +531,7 @@ build_initial_prompt() {
   fi
 }
 
-# primitive_dispatch_phase <agent>
+# primitive_dispatch_phase <agent> [<iteration>]
 # Spawns a new background session at cwd as `--agent qqq:<agent>` with the
 # initial-prompt builder output as the first user turn. Permission prompts are
 # bypassed so the background session can act without a TTY; AskUserQuestion
@@ -509,7 +539,7 @@ build_initial_prompt() {
 # F1=b: never resume. The agent reads the session_dir line from its first user
 # message and works from prior-phase artifacts on disk.
 primitive_dispatch_phase() {
-  local agent="$1"
+  local agent="$1" iteration="${2:-}"
   local wt slug session_dir name initial_prompt
   wt=$(current_worktree_root) || die "not in a worktree"
   slug=$(basename "$wt")
@@ -520,8 +550,8 @@ primitive_dispatch_phase() {
     exit 1
   fi
   name="${slug}:${agent}"
-  initial_prompt=$(build_initial_prompt "$session_dir")
-  note "dispatching: claude --bg --agent 'qqq:$agent' --name '$name'"
+  initial_prompt=$(build_initial_prompt "$session_dir" "" "" "$iteration")
+  note "dispatching: claude --bg --agent 'qqq:$agent' --name '$name'${iteration:+ ITERATION=$iteration}"
   claude --bg \
     --agent "qqq:$agent" \
     --name "$name" \
@@ -763,8 +793,41 @@ cmd_clarify()   { ensure_in_worktree_for_phase; ensure_dispatch_ok; primitive_di
 cmd_ui()        { ensure_in_worktree_for_phase; ensure_dispatch_ok; primitive_dispatch_phase ui-outliner; }
 cmd_nltp()      { ensure_in_worktree_for_phase; ensure_dispatch_ok; primitive_dispatch_phase nltp-interviewer; }
 cmd_tech_spec() { ensure_in_worktree_for_phase; ensure_dispatch_ok; primitive_dispatch_phase tech-interviewer; }
-cmd_plan()      { ensure_in_worktree_for_phase; ensure_dispatch_ok; primitive_dispatch_phase code-planner; }
-cmd_implement() { ensure_in_worktree_for_phase; ensure_dispatch_ok; primitive_dispatch_phase code-implementer; }
+
+# code-plan and code-implement accept `--iteration N` so the user (or the TUI)
+# can pin a review-loop iteration count. The value is forwarded to the agent
+# via build_initial_prompt's `ITERATION=<N>` line. Omit the flag to skip the
+# line entirely (current default behaviour).
+_parse_iteration_arg() {
+  local val=""
+  while (( $# > 0 )); do
+    case "$1" in
+      -i|--iteration) val="${2:?-i/--iteration requires N}"; shift 2 ;;
+      --iteration=*)  val="${1#--iteration=}"; shift ;;
+      *) die "unknown option: $1 (only -i/--iteration N is accepted)" ;;
+    esac
+  done
+  if [[ -n "$val" ]]; then
+    [[ "$val" =~ ^[0-9]+$ ]] || die "iteration must be a non-negative integer: $val"
+  fi
+  printf '%s' "$val"
+}
+
+cmd_plan() {
+  local iter
+  iter=$(_parse_iteration_arg "$@") || exit $?
+  ensure_in_worktree_for_phase
+  ensure_dispatch_ok
+  primitive_dispatch_phase code-planner "$iter"
+}
+
+cmd_implement() {
+  local iter
+  iter=$(_parse_iteration_arg "$@") || exit $?
+  ensure_in_worktree_for_phase
+  ensure_dispatch_ok
+  primitive_dispatch_phase code-implementer "$iter"
+}
 
 cmd_attach() {
   local id="${1:-}"
@@ -1241,6 +1304,11 @@ EOF
 tui_main_menu() {
   is_in_git_repo || die "TUI must run from inside a git repo"
 
+  # Install SIGINT trap so a single Ctrl+C just pops one menu level (like
+  # ESC) but a second Ctrl+C within QQQ_CTRL_C_DOUBLE_TAP_S seconds exits
+  # the whole TUI from any nesting depth.
+  trap _tui_sigint INT
+
   while true; do
     local opts=()
     opts+=("📋 new                    Start a new session (blank or from issue)")
@@ -1449,13 +1517,32 @@ tui_next_phase_flow() {
   )
   [[ -n "$phase" ]] || return 0
 
+  # code-plan / code-implement accept --iteration N. Prompt once for the
+  # value here so TUI users don't need to drop to the CLI. Empty input =
+  # no ITERATION= line in the prompt (current default).
+  local iter_args=()
+  case "$phase" in
+    plan|implement)
+      printf 'ITERATION (default empty = skip): ' >&2
+      local iter
+      read -r iter || iter=""
+      if [[ -n "$iter" ]]; then
+        if [[ "$iter" =~ ^[0-9]+$ ]]; then
+          iter_args=(--iteration "$iter")
+        else
+          err "iteration must be a non-negative integer — ignoring input '$iter'"
+        fi
+      fi
+      ;;
+  esac
+
   ( cd "$target_cwd" && case "$phase" in
       clarify)   cmd_clarify ;;
       ui)        cmd_ui ;;
       nltp)      cmd_nltp ;;
       tech-spec) cmd_tech_spec ;;
-      plan)      cmd_plan ;;
-      implement) cmd_implement ;;
+      plan)      cmd_plan      "${iter_args[@]}" ;;
+      implement) cmd_implement "${iter_args[@]}" ;;
     esac
   )
 }
@@ -1638,8 +1725,8 @@ usage: qqq [command] [args]
   ui                   Dispatch agent qqq:ui-outliner (Optional)
   nltp                 Dispatch agent qqq:nltp-interviewer (Optional)
   tech-spec            Dispatch agent qqq:tech-interviewer
-  plan                 Dispatch agent qqq:code-planner
-  implement            Dispatch agent qqq:code-implementer
+  plan      [-i N]     Dispatch agent qqq:code-planner    (optional --iteration N → ITERATION=N in first turn)
+  implement [-i N]     Dispatch agent qqq:code-implementer (optional --iteration N → ITERATION=N in first turn)
   attach <id>          claude attach <id>
   pick                 fzf → claude attach
   logs   [<id>]        claude logs   (fzf if no id)
@@ -1684,8 +1771,8 @@ main() {
     ui)         cmd_ui ;;
     nltp)       cmd_nltp ;;
     tech-spec)  cmd_tech_spec ;;
-    plan)       cmd_plan ;;
-    implement)  cmd_implement ;;
+    plan)       cmd_plan "$@" ;;
+    implement)  cmd_implement "$@" ;;
     attach)     cmd_attach "$@" ;;
     pick)       cmd_pick ;;
     logs)       cmd_logs "$@" ;;
