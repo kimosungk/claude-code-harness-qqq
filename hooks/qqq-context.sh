@@ -25,17 +25,19 @@ if ! is_session_dir "$cwd"; then
 fi
 
 # Phase inference — last artifact present determines the next expected action.
+# Phase commands dispatch as --agent qqq:<agent>; slash forms remain available
+# for ad-hoc reentry.
 next=""
 if [[ -f "$cwd/phase3-implement-log.md" ]]; then
   next="phase3 done — review diff, then qqq merge"
 elif [[ -f "$cwd/phase2-code-plan.md" ]]; then
-  next="phase3 — run /qqq:code-implement (requires phase2-review-state.json with review_loop_completed: true)"
+  next="phase3 — qqq implement  (agent qqq:code-implementer; needs phase2-review-state.json review_loop_completed: true)"
 elif [[ -f "$cwd/phase1-tech-spec.md" ]]; then
-  next="phase2 — run /qqq:code-plan"
+  next="phase2 — qqq plan  (agent qqq:code-planner)"
 elif [[ -f "$cwd/phase1-spec.md" ]]; then
-  next="phase1d — run /qqq:interview-tech (optional: /qqq:ui-outline, /qqq:interview-nltp)"
+  next="phase1d — qqq tech-spec  (agent qqq:tech-interviewer; optional: qqq ui, qqq nltp)"
 elif [[ -f "$cwd/phase0-issue.md" ]]; then
-  next="phase1 — run /qqq:clarify-requirement"
+  next="phase1 — qqq clarify  (agent qqq:req-clarifier)"
 fi
 
 printf 'qqq worktree: %s\n' "$cwd"

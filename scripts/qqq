@@ -331,12 +331,56 @@ render_phase0_issue() {
 # Primitives
 # ---------------------------------------------------------------------------
 
-# primitive_dispatch_phase <skill> <name_suffix>
-# Spawns a new background session at cwd with `/qqq:<skill> <session_dir>`.
-# F1=b: never resume. Each phase skill receives the session dir as $ARGUMENTS
-# so it can read prior-phase artifacts and write its own without guessing.
+# build_initial_prompt <session_dir> [<brief_text>] [<issue_file>]
+# Assembles the first-turn user message handed to an --agent session.
+# Always emits a `session_dir=<abs>` line; brief and issue sections are added
+# only when their inputs are non-empty.
+build_initial_prompt() {
+  local session_dir="$1" brief="${2:-}" issue_file="${3:-}"
+  printf 'session_dir=%s\n' "$session_dir"
+  if [[ -n "$brief" ]]; then
+    printf '\n[brief]\n%s\n' "$brief"
+  fi
+  if [[ -n "$issue_file" && -f "$issue_file" ]]; then
+    printf '\n[issue]\n'
+    cat "$issue_file"
+  fi
+}
+
+# primitive_dispatch_phase <agent>
+# Spawns a new background session at cwd as `--agent qqq:<agent>` with the
+# initial-prompt builder output as the first user turn. Permission prompts are
+# bypassed so the background session can act without a TTY; AskUserQuestion
+# remains a normal user-facing interaction (it isn't a permission gate).
+# F1=b: never resume. The agent reads the session_dir line from its first user
+# message and works from prior-phase artifacts on disk.
 primitive_dispatch_phase() {
-  local skill="$1" suffix="$2"
+  local agent="$1"
+  local wt slug session_dir name initial_prompt
+  wt=$(current_worktree_root) || die "not in a worktree"
+  slug=$(basename "$wt")
+  session_dir=$(infer_session_dir "$wt") || true
+  if [[ -z "$session_dir" || ! -d "$session_dir" ]]; then
+    err "no claude-works/<date_slug>/ session dir found in $wt"
+    err "→ run 'qqq new <slug>' first to create one"
+    exit 1
+  fi
+  name="${slug}:${agent}"
+  initial_prompt=$(build_initial_prompt "$session_dir")
+  note "dispatching: claude --bg --agent 'qqq:$agent' --name '$name'"
+  claude --bg \
+    --agent "qqq:$agent" \
+    --name "$name" \
+    --permission-mode bypassPermissions \
+    "$initial_prompt"
+}
+
+# primitive_dispatch_slash <slash-name>
+# Auxiliary entry point for skill-only flows (aux menu) that have no matching
+# agent. Mirrors the legacy slash-command dispatch so debug-frontend-pw etc.
+# keep working.
+primitive_dispatch_slash() {
+  local slash="$1"
   local wt slug session_dir name
   wt=$(current_worktree_root) || die "not in a worktree"
   slug=$(basename "$wt")
@@ -346,9 +390,9 @@ primitive_dispatch_phase() {
     err "→ run 'qqq new <slug>' first to create one"
     exit 1
   fi
-  name="${slug}:${suffix}"
-  note "dispatching: claude --bg --name '$name' '/qqq:$skill $session_dir'"
-  claude --bg --name "$name" "/qqq:$skill $session_dir"
+  name="${slug}:${slash}"
+  note "dispatching: claude --bg --name '$name' '/qqq:$slash $session_dir'"
+  claude --bg --name "$name" "/qqq:$slash $session_dir"
 }
 
 # primitive_new <slug> [<issue_n>]
@@ -358,7 +402,7 @@ primitive_dispatch_phase() {
 # `claude rm`'s auto-worktree-cleanup for control over file layout. The user
 # cleans up via `git worktree remove <path>` after merge.
 primitive_new() {
-  local slug="$1" issue_n="${2:-}"
+  local slug="$1" issue_n="${2:-}" brief="${3:-}"
   is_in_git_repo || die "must run from inside a git repo"
 
   # Slug sanity: lowercase + safe charset.
@@ -398,14 +442,22 @@ primitive_new() {
   fi
 
   # Dispatch the phase-1 session *from inside the worktree*. F1=b: new bg session.
-  # --append-system-prompt-file references the in-worktree file; no temp paths.
-  # Pass the absolute session dir as the skill argument so clarify-requirement
-  # writes phase1-spec.md into the same dir primitive_new just created.
-  local args=(--bg --name "${slug}:phase1")
-  [[ -n "$phase0_path" ]] && args+=(--append-system-prompt-file "$phase0_path")
+  # Brief and phase0 issue (when present) are folded into the agent's first user
+  # turn via build_initial_prompt; --append-system-prompt-file is no longer used.
+  # When neither brief nor issue is supplied, dispatch with no positional prompt
+  # at all — the agent enters its first turn empty and resolves session_dir from
+  # cwd (worktree root) via the clarify skill's standalone fallback.
+  local agent="req-clarifier" name="${slug}:req-clarifier"
+  local args=(--bg --agent "qqq:$agent" --name "$name" --permission-mode bypassPermissions)
 
-  note "dispatching: claude ${args[*]} '/qqq:clarify-requirement $session_dir'"
-  ( cd "$wt_path" && claude "${args[@]}" "/qqq:clarify-requirement $session_dir" )
+  if [[ -n "$brief" || -n "$phase0_path" ]]; then
+    local initial_prompt
+    initial_prompt=$(build_initial_prompt "$session_dir" "$brief" "$phase0_path")
+    args+=("$initial_prompt")
+  fi
+
+  note "dispatching: claude --bg --agent 'qqq:$agent' --name '$name'"
+  ( cd "$wt_path" && claude "${args[@]}" )
 }
 
 # primitive_job_action <op> [<id>]
@@ -426,29 +478,34 @@ primitive_job_action() {
 # ---------------------------------------------------------------------------
 
 cmd_new() {
-  local slug="" issue_n=""
+  local slug="" issue_n="" brief=""
   while (( $# > 0 )); do
     case "$1" in
       --issue) issue_n="${2:?--issue requires N}"; shift 2 ;;
       --issue=*) issue_n="${1#--issue=}"; shift ;;
-      -h|--help) printf 'usage: qqq new <slug> [--issue N]\n'; return 0 ;;
+      -m|--message) brief="${2:?-m/--message requires TEXT}"; shift 2 ;;
+      --message=*) brief="${1#--message=}"; shift ;;
+      -h|--help)
+        printf 'usage: qqq new <slug> [--issue N] [-m "requirement text"]\n'
+        return 0 ;;
       -*) die "unknown option: $1" ;;
       *)
         [[ -z "$slug" ]] || die "extra positional arg: $1"
         slug="$1"; shift ;;
     esac
   done
-  [[ -n "$slug" ]] || die "usage: qqq new <slug> [--issue N]"
-  primitive_new "$slug" "$issue_n"
+  [[ -n "$slug" ]] || die "usage: qqq new <slug> [--issue N] [-m TEXT]"
+  primitive_new "$slug" "$issue_n" "$brief"
 }
 
 # Each phase command is a thin wrapper around primitive_dispatch_phase.
-cmd_clarify()   { ensure_in_worktree_for_phase; ensure_dispatch_ok; primitive_dispatch_phase clarify-requirement phase1-clarify; }
-cmd_ui()        { ensure_in_worktree_for_phase; ensure_dispatch_ok; primitive_dispatch_phase ui-outline          phase1-ui; }
-cmd_nltp()      { ensure_in_worktree_for_phase; ensure_dispatch_ok; primitive_dispatch_phase interview-nltp      phase1-nltp; }
-cmd_tech_spec() { ensure_in_worktree_for_phase; ensure_dispatch_ok; primitive_dispatch_phase interview-tech      phase1-tech; }
-cmd_plan()      { ensure_in_worktree_for_phase; ensure_dispatch_ok; primitive_dispatch_phase code-plan           phase2; }
-cmd_implement() { ensure_in_worktree_for_phase; ensure_dispatch_ok; primitive_dispatch_phase code-implement      phase3; }
+# Arg = agent name (plugin-scoped as qqq:<agent> inside the primitive).
+cmd_clarify()   { ensure_in_worktree_for_phase; ensure_dispatch_ok; primitive_dispatch_phase req-clarifier; }
+cmd_ui()        { ensure_in_worktree_for_phase; ensure_dispatch_ok; primitive_dispatch_phase ui-outliner; }
+cmd_nltp()      { ensure_in_worktree_for_phase; ensure_dispatch_ok; primitive_dispatch_phase nltp-interviewer; }
+cmd_tech_spec() { ensure_in_worktree_for_phase; ensure_dispatch_ok; primitive_dispatch_phase tech-interviewer; }
+cmd_plan()      { ensure_in_worktree_for_phase; ensure_dispatch_ok; primitive_dispatch_phase code-planner; }
+cmd_implement() { ensure_in_worktree_for_phase; ensure_dispatch_ok; primitive_dispatch_phase code-implementer; }
 
 cmd_attach() {
   local id="${1:-}"
@@ -820,7 +877,7 @@ tui_new_flow() {
       printf 'slug: ' >&2
       read -r slug
       [[ -n "$slug" ]] || { note "no slug — cancelled"; return 0; }
-      primitive_new "$slug" ""
+      primitive_new "$slug" "" ""
       ;;
   esac
 }
@@ -895,7 +952,7 @@ tui_aux_flow() {
   [[ -n "$skill" ]] || return 0
   ensure_in_worktree_for_phase
   ensure_dispatch_ok
-  primitive_dispatch_phase "$skill" aux
+  primitive_dispatch_slash "$skill"
 }
 
 # ---------------------------------------------------------------------------
@@ -909,12 +966,13 @@ usage: qqq [command] [args]
   (no command)         TUI entry (fzf menu)
   new <slug>           Start a blank session (no issue)
   new <slug> --issue N GitLab issue + Phase 0/1
-  clarify              Run /qqq:clarify-requirement in current worktree
-  ui                   Run /qqq:ui-outline (Optional)
-  nltp                 Run /qqq:interview-nltp (Optional)
-  tech-spec            Run /qqq:interview-tech
-  plan                 Run /qqq:code-plan
-  implement            Run /qqq:code-implement
+  new <slug> -m TEXT   Inject a requirement brief into the first agent turn
+  clarify              Dispatch agent qqq:req-clarifier
+  ui                   Dispatch agent qqq:ui-outliner (Optional)
+  nltp                 Dispatch agent qqq:nltp-interviewer (Optional)
+  tech-spec            Dispatch agent qqq:tech-interviewer
+  plan                 Dispatch agent qqq:code-planner
+  implement            Dispatch agent qqq:code-implementer
   attach <id>          claude attach <id>
   pick                 fzf → claude attach
   logs   [<id>]        claude logs   (fzf if no id)
