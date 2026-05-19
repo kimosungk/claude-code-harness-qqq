@@ -361,6 +361,25 @@ read_active_session_subdir() {
   printf '%s' "$subdir"
 }
 
+# read_active_parent_branch <worktree_root>
+# Returns the parent branch name (line 3 of sentinel) — the branch the leader
+# checkout was on when this worktree was created. Empty string when:
+#   - sentinel is in legacy 2-line format (pre-v3.5 writers),
+#   - leader was in detached HEAD at creation time,
+#   - line 3 is literally empty for any other reason.
+# Returns 1 (no output) only when the sentinel file itself is missing.
+# Consumer (merge-to-parent TUI action) treats empty as "ask the user".
+read_active_parent_branch() {
+  local wt="$1"
+  [[ -d "$wt" ]] || return 1
+  local sentinel="$wt/.qqq-current-session"
+  [[ -f "$sentinel" ]] || return 1
+  local parent
+  parent=$(sed -n '3p' "$sentinel" 2>/dev/null)
+  parent="${parent%$'\n'}"
+  printf '%s' "$parent"
+}
+
 # list_qqq_worktrees [<leader_root>]
 # Emits qqq-managed worktrees as TSV: <wt_path>\t<slug>\t<branch>\t<status>
 # where <status> is one of: active|stale|archived.
@@ -550,18 +569,68 @@ render_phase0_issue() {
 # Primitives
 # ---------------------------------------------------------------------------
 
-# build_initial_prompt <session_dir> [<brief_text>] [<issue_file>] [<iteration>]
+# emit_at_mentions <session_dir> <agent>
+# Emits `@<abs-path>` lines for each prior-phase artifact the agent consumes,
+# so the dispatched session loads them via Claude Code's file-mention syntax
+# without an exploratory ls/find/Read sequence. Required inputs are emitted
+# unconditionally; optional inputs are emitted only when present in
+# <session_dir> (silent omission when absent — no placeholder line).
+#
+# Per-phase input map mirrors each skill's documented Phase 0 inputs. When
+# updating a skill's input contract, update the corresponding case branch.
+emit_at_mentions() {
+  local session_dir="$1" agent="$2"
+  local required=() optional=()
+  case "$agent" in
+    req-clarifier)
+      optional=(phase0-issue.md) ;;
+    ui-outliner)
+      required=(phase1-spec.md) ;;
+    tech-interviewer)
+      required=(phase1-spec.md)
+      optional=(phase1-ui-outline.md phase1-nltp.md) ;;
+    nltp-interviewer)
+      required=(phase1-spec.md)
+      optional=(phase1-ui-outline.md) ;;
+    code-planner)
+      required=(phase1-spec.md phase1-tech-spec.md)
+      optional=(phase1-ui-outline.md phase1-nltp.md) ;;
+    code-implementer)
+      required=(phase2-code-plan.md)
+      optional=(phase1-tech-spec.md phase1-nltp.md) ;;
+    *)
+      return 0 ;;
+  esac
+  local f
+  for f in "${required[@]}"; do
+    printf '@%s/%s\n' "$session_dir" "$f"
+  done
+  for f in "${optional[@]}"; do
+    [[ -f "$session_dir/$f" ]] && printf '@%s/%s\n' "$session_dir" "$f"
+  done
+}
+
+# build_initial_prompt <session_dir> [<agent>] [<brief_text>] [<issue_file>] [<iteration>]
 # Assembles the first-turn user message handed to an --agent session.
-# Always emits a `session_dir=<abs>` line; brief, issue, and iteration sections
-# are added only when their inputs are non-empty. `iteration` becomes an
-# `ITERATION=<N>` line right after `session_dir` so phase agents that consume
-# an iteration count (currently code-planner and code-implementer) can parse it
-# from the first user turn.
+# Always emits a `session_dir=<abs>` line; brief, issue, iteration, and
+# `@`-mention sections are added only when their inputs are non-empty.
+# `iteration` becomes an `ITERATION=<N>` line right after `session_dir` so
+# phase agents that consume an iteration count (currently code-planner and
+# code-implementer) can parse it from the first user turn. `agent` drives the
+# per-phase input map in emit_at_mentions so prior-phase artifacts arrive
+# pre-attached and the agent skips its own discovery pass.
 build_initial_prompt() {
-  local session_dir="$1" brief="${2:-}" issue_file="${3:-}" iteration="${4:-}"
+  local session_dir="$1" agent="${2:-}" brief="${3:-}" issue_file="${4:-}" iteration="${5:-}"
   printf 'session_dir=%s\n' "$session_dir"
   if [[ -n "$iteration" ]]; then
     printf 'ITERATION=%s\n' "$iteration"
+  fi
+  if [[ -n "$agent" ]]; then
+    local mentions
+    mentions=$(emit_at_mentions "$session_dir" "$agent")
+    if [[ -n "$mentions" ]]; then
+      printf '\n%s\n' "$mentions"
+    fi
   fi
   if [[ -n "$brief" ]]; then
     printf '\n[brief]\n%s\n' "$brief"
@@ -591,7 +660,7 @@ primitive_dispatch_phase() {
     exit 1
   fi
   name="${slug}:${agent}"
-  initial_prompt=$(build_initial_prompt "$session_dir" "" "" "$iteration")
+  initial_prompt=$(build_initial_prompt "$session_dir" "$agent" "" "" "$iteration")
   note "dispatching: claude --bg --agent 'qqq:$agent' --name '$name'${iteration:+ ITERATION=$iteration}"
   claude --bg \
     --agent "qqq:$agent" \
@@ -687,7 +756,7 @@ primitive_new() {
         || { rm -f "$inline_phase0"; inline_phase0=""; }
     fi
     local initial_prompt
-    initial_prompt=$(build_initial_prompt "$session_dir" "$brief" "$inline_phase0")
+    initial_prompt=$(build_initial_prompt "$session_dir" "$agent" "$brief" "$inline_phase0")
     [[ -n "$inline_phase0" ]] && rm -f "$inline_phase0"
     args+=("$initial_prompt")
   fi
@@ -772,6 +841,28 @@ is_qqq_installed() {
   ' "$settings" >/dev/null 2>&1
 }
 
+# qqq_foreign_worktree_create_cmds — list any WorktreeCreate hook commands in
+# settings.json that look like another qqq install (basename matches
+# `qqq-worktree-create.sh`) but are NOT this process's own command. Used by
+# `qqq install` to warn about path drift (dev checkout vs marketplace cache
+# vs another linked plugin dir). Each leftover foreign entry makes Claude
+# Code fire WorktreeCreate twice per session, with one of the two falling
+# through to the non-qqq simulate branch in hooks/qqq-worktree-create.sh —
+# silent but confusing.
+qqq_foreign_worktree_create_cmds() {
+  local cmd settings
+  cmd=$(qqq_worktree_create_cmd)
+  settings="$HOME/.claude/settings.json"
+  [[ -f "$settings" ]] || return 0
+  jq -r --arg cmd "$cmd" '
+    (.hooks.WorktreeCreate // [])[]?
+      | .hooks[]?
+      | select(.command != $cmd)
+      | select(.command | test("qqq-worktree-create\\.sh($|[[:space:]])"))
+      | .command
+  ' "$settings" 2>/dev/null
+}
+
 cmd_install() {
   local cmd settings tmp
   cmd=$(qqq_worktree_create_cmd)
@@ -799,9 +890,45 @@ cmd_install() {
   if ! is_qqq_installed; then
     die "post-write verification failed — check $settings manually"
   fi
+
+  # Path-drift advisory. If another qqq-worktree-create.sh from a different
+  # install source is still registered, Claude Code will execute both on every
+  # WorktreeCreate. List them so the operator can clean up via
+  # `qqq uninstall --all` (which removes every qqq-worktree-create.sh entry
+  # regardless of path) or by running uninstall from each foreign source.
+  local foreign
+  foreign=$(qqq_foreign_worktree_create_cmds)
+  if [[ -n "$foreign" ]]; then
+    warn "another qqq install source is also registered in $settings:"
+    printf '%s\n' "$foreign" | while IFS= read -r line; do
+      [[ -n "$line" ]] && warn "  $line"
+    done
+    warn "  → WorktreeCreate will fire BOTH hooks per session (one of them"
+    warn "    will fall through to the non-qqq simulate path)."
+    warn "  → 'qqq uninstall --all' removes every qqq WorktreeCreate entry,"
+    warn "    then re-run 'qqq install' from your preferred source."
+  fi
 }
 
 cmd_uninstall() {
+  # Default: remove only this process's own qqq-worktree-create.sh command.
+  # --all: remove every WorktreeCreate entry whose command matches
+  # `bash …/qqq-worktree-create.sh`, regardless of which install source put
+  # it there. Use after a marketplace ↔ dev path migration when path-drift
+  # has left foreign entries the per-source uninstall could not see.
+  local mode="self"
+  while (( $# > 0 )); do
+    case "$1" in
+      --all) mode="all"; shift ;;
+      -h|--help)
+        printf 'usage: qqq uninstall [--all]\n'
+        printf '  (default)  Remove only this process'\''s qqq WorktreeCreate command.\n'
+        printf '  --all      Remove every qqq-worktree-create.sh entry regardless of path.\n'
+        return 0 ;;
+      *) die "unknown option: $1 (only --all is accepted)" ;;
+    esac
+  done
+
   local cmd settings tmp
   cmd=$(qqq_worktree_create_cmd)
   settings="$HOME/.claude/settings.json"
@@ -812,20 +939,40 @@ cmd_uninstall() {
   fi
 
   tmp=$(mktemp -t qqq-settings-XXXXXX.json)
-  jq --arg cmd "$cmd" '
-    if .hooks.WorktreeCreate then
-      .hooks.WorktreeCreate = (
-        (.hooks.WorktreeCreate | map(
-          .hooks |= map(select(.command != $cmd))
-        )) | map(select((.hooks | length) > 0))
-      )
-      | if (.hooks.WorktreeCreate | length) == 0 then del(.hooks.WorktreeCreate) else . end
-      | if (.hooks | length) == 0 then del(.hooks) else . end
-    else . end
-  ' "$settings" > "$tmp" || { rm -f "$tmp"; die "jq update failed"; }
+  if [[ "$mode" == "all" ]]; then
+    # Match by basename pattern so any path variant is removed. The regex
+    # mirrors qqq_foreign_worktree_create_cmds for consistency.
+    jq '
+      if .hooks.WorktreeCreate then
+        .hooks.WorktreeCreate = (
+          (.hooks.WorktreeCreate | map(
+            .hooks |= map(select(.command | test("qqq-worktree-create\\.sh($|[[:space:]])") | not))
+          )) | map(select((.hooks | length) > 0))
+        )
+        | if (.hooks.WorktreeCreate | length) == 0 then del(.hooks.WorktreeCreate) else . end
+        | if (.hooks | length) == 0 then del(.hooks) else . end
+      else . end
+    ' "$settings" > "$tmp" || { rm -f "$tmp"; die "jq update failed"; }
+  else
+    jq --arg cmd "$cmd" '
+      if .hooks.WorktreeCreate then
+        .hooks.WorktreeCreate = (
+          (.hooks.WorktreeCreate | map(
+            .hooks |= map(select(.command != $cmd))
+          )) | map(select((.hooks | length) > 0))
+        )
+        | if (.hooks.WorktreeCreate | length) == 0 then del(.hooks.WorktreeCreate) else . end
+        | if (.hooks | length) == 0 then del(.hooks) else . end
+      else . end
+    ' "$settings" > "$tmp" || { rm -f "$tmp"; die "jq update failed"; }
+  fi
   mv "$tmp" "$settings"
 
-  note "uninstalled qqq WorktreeCreate hook from $settings"
+  if [[ "$mode" == "all" ]]; then
+    note "uninstalled ALL qqq WorktreeCreate entries from $settings"
+  else
+    note "uninstalled qqq WorktreeCreate hook from $settings"
+  fi
 }
 
 # Each phase command is a thin wrapper around primitive_dispatch_phase.
@@ -893,18 +1040,103 @@ cmd_stop()  { primitive_job_action stop   "${1:-}"; }
 cmd_rm()    { primitive_job_action rm     "${1:-}"; }
 
 cmd_merge_mr() {
-  # /qqq:merge-mr is a slash skill — dispatch as a one-off bg session in cwd
-  # and pass the session dir so the skill knows what to archive/render.
+  # Top-level "merge" — dispatches /glwf:gitlab-mr to open an MR against the
+  # repo's default branch (origin/HEAD, typically main). The skill creates
+  # the MR but does NOT auto-merge: final approval happens on the GitLab web
+  # UI. Phase artifacts are NOT archived here (the worktree's
+  # `merge-to-parent` action owns archival — that's the qqq completion point
+  # for feature -> dev).
+  #
+  # Host: GitLab-only. /glwf:gitlab-mr is GitLab-specific (curl + GitLab REST
+  # API). GitHub origins are refused with BLOCKED rather than silently
+  # routed elsewhere, so the user always knows which pipeline ran.
   ensure_in_worktree_for_phase
-  local wt slug session_dir
+  local wt slug
   wt=$(current_worktree_root)
   slug=$(basename "$wt")
+
+  local origin_url
+  origin_url=$(git -C "$wt" remote get-url origin 2>/dev/null || true)
+  if [[ -z "$origin_url" ]]; then
+    err "no 'origin' remote configured in $wt"
+    exit 1
+  fi
+  case "$origin_url" in
+    *gitlab*) ;;
+    *) err "BLOCKED: top-level merge uses /glwf:gitlab-mr, which is GitLab-only"
+       err "  origin URL is $origin_url"
+       err "  for the parent-branch flow on any host, use TUI: worktrees > <wt> > merge-to-parent"
+       exit 1
+       ;;
+  esac
+
+  local cur_branch
+  cur_branch=$(git -C "$wt" symbolic-ref --short HEAD 2>/dev/null || true)
+  if [[ -z "$cur_branch" ]]; then
+    err "current HEAD is detached in $wt — cannot determine source branch"
+    exit 1
+  fi
+
+  # Resolve target = origin/HEAD. /glwf:gitlab-mr also defaults to 'main' when
+  # the target arg is omitted, but we resolve it here so the dispatched
+  # invocation is explicit (and survives repos whose default isn't 'main').
+  local default_branch
+  default_branch=$(git -C "$wt" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null \
+    | sed 's@^refs/remotes/origin/@@')
+  if [[ -z "$default_branch" ]]; then
+    default_branch=$(git -C "$wt" ls-remote --symref origin HEAD 2>/dev/null \
+      | awk '/^ref:/ {sub(/^refs\/heads\//,"",$2); print $2; exit}')
+  fi
+  if [[ -z "$default_branch" ]]; then
+    err "cannot determine default branch (origin/HEAD missing)"
+    err "  try: git remote set-head origin -a"
+    exit 1
+  fi
+
+  if [[ "$cur_branch" == "$default_branch" ]]; then
+    err "refusing to open MR from '$cur_branch' to itself"
+    exit 1
+  fi
+
+  note "dispatching: claude --bg --name '$slug:merge' '/glwf:gitlab-mr $cur_branch $default_branch'"
+  claude --bg --name "${slug}:merge" "/glwf:gitlab-mr $cur_branch $default_branch"
+}
+
+cmd_merge_to_parent() {
+  # Worktree-scoped "merge-to-parent" — dispatches /qqq:merge-mr against the
+  # branch the leader was on when this worktree was created (typically dev).
+  # Auto-merges (no --no-merge) per the "feature -> dev = automation" policy.
+  # The skill performs the full Phase 3 archive + sentinel-clear pipeline.
+  #
+  # parent_branch resolution:
+  #   1. env QQQ_PARENT_BRANCH wins (the TUI handler uses this after asking
+  #      the user when sentinel line 3 is empty);
+  #   2. otherwise read line 3 of .qqq-current-session (written by
+  #      qqq-worktree-create.sh v3.5+);
+  #   3. if still empty (legacy 2-line sentinel, or leader was detached at
+  #      create time), refuse with guidance — the caller is expected to
+  #      either set QQQ_PARENT_BRANCH or invoke from the TUI.
+  ensure_in_worktree_for_phase
+  local wt slug session_dir parent_branch
+  wt=$(current_worktree_root)
+  slug=$(basename "$wt")
+
+  parent_branch="${QQQ_PARENT_BRANCH:-}"
+  if [[ -z "$parent_branch" ]]; then
+    parent_branch=$(read_active_parent_branch "$wt" 2>/dev/null || true)
+  fi
+  if [[ -z "$parent_branch" ]]; then
+    err "no parent branch recorded for this worktree (legacy sentinel or detached HEAD at create time)"
+    err "  from CLI: QQQ_PARENT_BRANCH=<branch> qqq merge-to-parent"
+    err "  from TUI: pick worktrees > <wt> > merge-to-parent (will prompt)"
+    exit 1
+  fi
+
   session_dir=$(read_active_session_dir "$wt") || true
   if [[ -z "$session_dir" || ! -d "$session_dir" ]]; then
-    # The merge-mr skill clears the sentinel after archiving. On idempotent
-    # re-invoke (e.g. user ran `qqq merge-mr` once with --no-merge then again
-    # to actually merge), fall back to the most-recent dir under
-    # claude-works-completed/. The skill's step 2 handles the already-archived case.
+    # Idempotent fall-back: if the sentinel is gone (already archived), find
+    # the most-recent dir under claude-works-completed/. /qqq:merge-mr step 2
+    # handles the already-archived case.
     session_dir=$(find "$wt/claude-works-completed" -mindepth 1 -maxdepth 2 -type d 2>/dev/null \
       | xargs -I{} stat -c '%Y	{}' {} 2>/dev/null \
       | sort -rn | head -n1 | cut -f2-)
@@ -914,8 +1146,9 @@ cmd_merge_mr() {
     fi
     note "sentinel absent — falling back to archived session: $session_dir"
   fi
-  note "dispatching: claude --bg --name '$slug:merge' '/qqq:merge-mr $session_dir'"
-  claude --bg --name "${slug}:merge" "/qqq:merge-mr $session_dir"
+
+  note "dispatching: claude --bg --name '$slug:merge-parent' '/qqq:merge-mr --base $parent_branch $session_dir'"
+  claude --bg --name "${slug}:merge-parent" "/qqq:merge-mr --base $parent_branch $session_dir"
 }
 
 # ---------------------------------------------------------------------------
@@ -1365,7 +1598,7 @@ tui_main_menu() {
     local opts=()
     opts+=("📋 new                    Start a new session (blank or from issue)")
     opts+=("🌲 worktrees              Manage qqq worktrees (sessions / next-phase / remove)")
-    opts+=("🔀 merge                  Run /qqq:merge-mr in current worktree (push + MR/PR + merge)")
+    opts+=("🔀 merge                  Run /glwf:gitlab-mr in current worktree (GitLab only — MR to default branch, no auto-merge)")
     opts+=("⚙  aux                    Other skills (rebase-conflict-resolve / ui-verify / debug-frontend)")
     opts+=("ℹ  verify                 Smoke test (G1..G6)")
     opts+=("✖  quit")
@@ -1473,14 +1706,16 @@ tui_worktree_action_flow() {
     action=$(printf '%s\n' \
       "claude-sessions     Pick a background session in this worktree (attach/logs/stop/remove-session)" \
       "next-phase          Dispatch the next phase (clarify/ui/nltp/tech-spec/plan/implement)" \
+      "merge-to-parent     Push + open MR/PR to the parent branch this worktree was forked from (auto-merge)" \
       "remove-worktree     Stop all sessions, then 'git worktree remove' + 'git branch -D'" \
       | tui_pick "$slug > " --delimiter=' ' --accept-nth=1
     )
     [[ -n "$action" ]] || return 0
 
     case "$action" in
-      claude-sessions) tui_worktree_sessions_flow "$wt" ;;
-      next-phase)      tui_next_phase_flow "$wt" ;;
+      claude-sessions)  tui_worktree_sessions_flow "$wt" ;;
+      next-phase)       tui_next_phase_flow "$wt" ;;
+      merge-to-parent)  tui_merge_to_parent_flow "$wt" ;;
       remove-worktree)
         if tui_remove_worktree_flow "$wt"; then
           return 0  # worktree gone, no longer a valid context
@@ -1488,6 +1723,49 @@ tui_worktree_action_flow() {
         ;;
     esac
   done
+}
+
+# tui_merge_to_parent_flow <wt_path>
+# Resolve parent branch from sentinel; if empty (legacy worktree or detached
+# HEAD at create time), prompt the user via stdin. Then `cd` into the wt and
+# invoke cmd_merge_to_parent which dispatches the bg session.
+tui_merge_to_parent_flow() {
+  local wt="$1"
+  local slug
+  slug=$(basename "$wt")
+  [[ -d "$wt" ]] || { err "worktree path does not exist: $wt"; return 1; }
+
+  local parent
+  parent=$(read_active_parent_branch "$wt" 2>/dev/null || true)
+
+  if [[ -z "$parent" ]]; then
+    printf '\n[merge-to-parent: %s] no parent branch recorded for this worktree.\n' "$slug" >&2
+    printf '(This happens when the worktree was created before v3.5, or when the leader was in detached HEAD.)\n\n' >&2
+    printf 'Enter parent branch to MR against (e.g. dev), or empty to cancel: ' >&2
+    local entered
+    read -r entered || entered=""
+    entered="${entered## }"; entered="${entered%% }"
+    if [[ -z "$entered" ]]; then
+      warn "merge-to-parent cancelled — no parent branch supplied"
+      return 0
+    fi
+    parent="$entered"
+  fi
+
+  printf '\n=== merge-to-parent: %s → %s ===\n' "$slug" "$parent" >&2
+  printf 'This will: push %s, archive claude-works/<slug> → claude-works-completed/, open MR/PR against %s, then auto-merge.\n' "$slug" "$parent" >&2
+  printf 'Continue? [y/N]: ' >&2
+  local confirm
+  read -r confirm || confirm=""
+  case "$confirm" in
+    y|Y|yes|YES) ;;
+    *) note "merge-to-parent cancelled"; return 0 ;;
+  esac
+
+  # cmd_merge_to_parent reads QQQ_PARENT_BRANCH first, so we just export and
+  # invoke it in a subshell at wt cwd. This also satisfies the
+  # ensure_in_worktree_for_phase guard inside cmd_merge_to_parent.
+  ( cd "$wt" && QQQ_PARENT_BRANCH="$parent" cmd_merge_to_parent )
 }
 
 # tui_worktree_sessions_flow <wt_path>
@@ -1773,7 +2051,9 @@ usage: qqq [command] [args]
 
   (no command)         TUI entry (fzf menu)
   install              Register the WorktreeCreate hook in ~/.claude/settings.json
-  uninstall            Remove the WorktreeCreate hook registration
+                       (warns if a foreign qqq install source is also registered)
+  uninstall [--all]    Remove the WorktreeCreate hook registration
+                       (--all removes every qqq-worktree-create.sh entry regardless of path)
   new <slug>           Start a blank session (no issue)
   new <slug> --issue N GitLab issue + Phase 0/1
   new <slug> -m TEXT   Inject a requirement brief into the first agent turn
@@ -1788,7 +2068,9 @@ usage: qqq [command] [args]
   logs   [<id>]        claude logs   (fzf if no id)
   stop   [<id>]        claude stop   (fzf if no id)
   rm     [<id>]        claude rm     (fzf if no id)
-  merge-mr             Run /qqq:merge-mr in current worktree
+  merge                Run /glwf:gitlab-mr in current worktree (GitLab only — MR to origin/HEAD, no auto-merge)
+  merge-to-parent      Run /qqq:merge-mr --base <parent> in current worktree (auto-merge to parent branch recorded at create time)
+                       (env: QQQ_PARENT_BRANCH=<branch> overrides the sentinel value)
   verify               Smoke tests (G5/G6 cheap; G1/G2 live; G4 regression; G3 manual)
   -h, --help           Show this help
 
@@ -1820,8 +2102,8 @@ main() {
 
   local cmd="$1"; shift
   case "$cmd" in
-    install)    cmd_install ;;
-    uninstall)  cmd_uninstall ;;
+    install)    cmd_install "$@" ;;
+    uninstall)  cmd_uninstall "$@" ;;
     new)        cmd_new "$@" ;;
     clarify)    cmd_clarify ;;
     ui)         cmd_ui ;;
@@ -1835,6 +2117,7 @@ main() {
     stop)       cmd_stop "$@" ;;
     rm)         cmd_rm "$@" ;;
     merge|merge-mr) cmd_merge_mr ;;
+    merge-to-parent) cmd_merge_to_parent ;;
     *)          err "unknown command: $cmd"; usage; exit 2 ;;
   esac
 }
