@@ -84,6 +84,8 @@ If a candidate finding requires subjective judgment to defend, OMIT it.
 
 ## Command
 
+> **Mirror note.** The `-m`, `model_reasoning_effort`, and `--sandbox` values in this block are mirrored from the per-agent overrides table in `skills/code-implement-review/references/codex-command.md` — that table is the canonical source of truth. Update both this file and that table together on change.
+
 ```bash
 prompt_file="<session_dir>/phase1-tech-spec-sanity-prompt.md"
 out_file="<session_dir>/phase1-tech-spec-sanity-output.json"

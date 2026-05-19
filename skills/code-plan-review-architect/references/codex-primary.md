@@ -93,6 +93,8 @@ Each section value is a markdown string rendered verbatim under its header. Anch
 
 ## Command
 
+> **Mirror note.** The `-m`, `model_reasoning_effort`, and `--sandbox` values in this block are mirrored from the per-agent overrides table in `skills/code-implement-review/references/codex-command.md` — that table is the canonical source of truth. Update both this file and that table together on change.
+
 ```bash
 prompt_file="<session_dir>/phase2-g2-architect-codex-prompt-{k}.md"
 out_file="<session_dir>/phase2-g2-architect-codex-output-{k}.md"

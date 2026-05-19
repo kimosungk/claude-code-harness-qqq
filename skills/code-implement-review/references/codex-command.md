@@ -1,8 +1,16 @@
-# Codex Command — Shared Reference
+# Codex Command — Shared Reference (Source of Truth)
 
-Single source of truth for the qqq codex invocation pattern, per-flag rationale (the flags that do **not** vary per skill), plugin_root resolution, and the stdin-hang background. Read this from any qqq codex-using skill — `code-implement-review`, the three `code-plan-review-*` gates, `interview-tech` sanity-check, `rebase-conflict-resolve`.
+**This file is the source of truth** for the qqq codex invocation pattern AND for the model / effort / sandbox values used by every qqq codex-using skill — `code-implement-review`, the three `code-plan-review-*` gates, `interview-tech` sanity-check, `rebase-conflict-resolve`.
 
-Each skill's own `codex-primary.md` (or `codex-sanity-check.md`) keeps the literal command block and 1-3 lines of skill-specific rationale for the parts that vary (model, effort, sandbox). For everything else, point at this file.
+Each skill's own `codex-primary.md` (or `codex-sanity-check.md`) keeps the literal `codex exec` command block for executability, but its `-m` / `model_reasoning_effort` / `--sandbox` values are **mirrors of the table in §"Per-agent overrides" below**. The skill files MUST stay in sync with this table.
+
+### Update protocol when changing a model, effort, or sandbox value
+
+1. Update the row in §"Per-agent overrides" below (this is the canonical change).
+2. Update the matching `-m` / `-c 'model_reasoning_effort=…'` / `--sandbox` value in the skill's own `codex-primary.md` (or `codex-sanity-check.md`).
+3. Update the skill-specific rationale prose under that command if the reasoning behind the choice changed.
+
+Drift between this table and a skill file is a bug. If you find drift, treat **this table** as authoritative and fix the skill file.
 
 ## Canonical Pattern
 
@@ -26,16 +34,28 @@ All 6 qqq codex-using skills produce structured JSON output via `--output-schema
 
 ## Per-agent overrides
 
-Each skill's own codex-*.md fixes its values for these positions:
+The values in this table are **canonical**. The matching skill-side `codex-*.md` files mirror them.
 
-- `<MODEL>` — `gpt-5.5` for Phase 2 architect, Phase 2 critic, Phase 3 implement review, and rebase resolver; `gpt-5.4` for Phase 2 explorer (Gate 1) and the Phase 1 sanity-check (lighter scope).
-- `<EFFORT>` — `xhigh` for Phase 2 architect and Phase 3 implement review; `high` for Phase 2 explorer + critic and rebase resolver; `medium` for the Phase 1 sanity-check.
-- `<SANDBOX>` — `read-only` for all read-only reviewers; `workspace-write` for `rebase-conflict-resolve` only.
+| Skill (path) | `<MODEL>` | `<EFFORT>` | `<SANDBOX>` |
+|---|---|---|---|
+| `code-implement-review/references/codex-primary.md` (Phase 3 review) | `gpt-5.5` | `xhigh` | `read-only` |
+| `code-plan-review-explorer/references/codex-primary.md` (Phase 2 Gate 1) | `gpt-5.4` | `high` | `read-only` |
+| `code-plan-review-architect/references/codex-primary.md` (Phase 2 Gate 2) | `gpt-5.5` | `xhigh` | `read-only` |
+| `code-plan-review-critic/references/codex-primary.md` (Phase 2 Gate 3) | `gpt-5.5` | `high` | `read-only` |
+| `interview-tech/references/codex-sanity-check.md` (Phase 1 sanity-check) | `gpt-5.4` | `medium` | `read-only` |
+| `rebase-conflict-resolve/references/codex-primary.md` | `gpt-5.5` | `high` | `workspace-write` |
+
+Selection logic (mnemonic — full per-skill rationale stays in the skill file):
+
+- `gpt-5.5` for tasks that judge intent or merge safety (architect, critic, Phase 3 review, rebase). `gpt-5.4` for mechanical fact / consistency checking (explorer, sanity-check).
+- `xhigh` for the two gates that are hardest to reverse downstream (architect locks structure, Phase 3 review is last before delivery). `high` for the other reasoning-judgment gates. `medium` for mechanical consistency checks.
+- `read-only` everywhere review happens. `workspace-write` only when the skill must mutate the working tree (rebase resolution).
+
+### Non-model overrides (paths)
+
 - `<SCHEMA_FILE>` — absolute path under `<plugin_root>/skills/<skill>/references/<name>.schema.json`. All 6 codex-using skills now have their own schema.
 - `<PROMPT_FILE>`, `<OUT_FILE>` — paths inside `<session_dir>` so the audit trail is preserved and the Write tool grant covers them.
 - `<WORKDIR>` — `<session_dir>` for review skills; `<worktree>` for the rebase resolver.
-
-If you change one of these values for a skill, edit only that skill's own codex-*.md. Do not edit this shared file.
 
 ## Plugin Root Resolution
 
@@ -69,13 +89,13 @@ These flags are identical across all qqq codex calls. Per-skill files should not
 
 ## Per-agent flag rationale lives in the per-skill file
 
-Each skill's own codex-*.md explains its choice of:
+Each skill's own codex-*.md carries **the rationale** for its choice of:
 
 - `-m <MODEL>` — why `gpt-5.4` vs `gpt-5.5` for that scope
 - `-c 'model_reasoning_effort="<EFFORT>"'` — why `medium` vs `high` vs `xhigh` for that scope
 - `--sandbox <SANDBOX>` — why `read-only` vs `workspace-write`
 
-Keep those rationales tight (1-3 lines each per flag).
+Keep those rationales tight (1-3 lines each per flag). The **values themselves are mirrors of the §"Per-agent overrides" table above** — never change a value in only one place.
 
 ## Persist artifact failure stubs
 

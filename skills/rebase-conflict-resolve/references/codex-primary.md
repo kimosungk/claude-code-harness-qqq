@@ -88,6 +88,8 @@ Output rules:
 
 ## Command
 
+> **Mirror note.** The `-m`, `model_reasoning_effort`, and `--sandbox` values in this block are mirrored from the per-agent overrides table in `skills/code-implement-review/references/codex-command.md` — that table is the canonical source of truth. Update both this file and that table together on change.
+
 Pipe the prompt file via stdin and use the `-` positional to disable argv-prompt — this gives Codex a clean EOF and avoids the documented hang where Codex waits for a `<stdin>` block when both an argv prompt and an inherited (non-TTY, never-EOFing) stdin are present. Set the worktree explicitly with `-C` rather than `cd`-ing the parent shell.
 
 ```bash
