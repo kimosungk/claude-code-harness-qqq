@@ -1039,6 +1039,61 @@ cmd_logs()  { primitive_job_action logs   "${1:-}"; }
 cmd_stop()  { primitive_job_action stop   "${1:-}"; }
 cmd_rm()    { primitive_job_action rm     "${1:-}"; }
 
+# validate_branch_arg <name> [label]
+# Reject branch names that could rewrite slash-command argv when injected
+# into a dispatched prompt. `git check-ref-format --branch` is git's own
+# parser — it rejects whitespace, control characters, `..`, `~`, `^`, `:`,
+# `?`, `*`, `[`, leading `-`, and other shell/git-unsafe forms. We use it
+# instead of a hand-rolled regex so a branch git itself accepts always
+# passes, and anything git would reject is also rejected here.
+#
+# Inputs reaching slash-command dispatch can come from: $QQQ_PARENT_BRANCH
+# env, sentinel line 3 (file on disk — tamperable), or TUI stdin. All three
+# funnel through this guard.
+validate_branch_arg() {
+  local name="${1-}" label="${2:-branch}"
+  if [[ -z "$name" ]]; then
+    err "empty $label"
+    return 1
+  fi
+  if ! git check-ref-format --branch "$name" >/dev/null 2>&1; then
+    err "invalid $label (rejected by git check-ref-format): $name"
+    return 1
+  fi
+}
+
+# extract_origin_host <url>
+# Pull the host component out of a git remote URL so we can match on
+# "gitlab" only in the host position. Avoids false positives like
+# https://github.com/foo/gitlab-bar.git matching `*gitlab*` on the full URL.
+#
+# Handles the three URL forms `git remote get-url` produces:
+#   https://host[:port]/path
+#   ssh://[user@]host[:port]/path
+#   [user@]host:path                  (SCP-like SSH; no scheme)
+# Output is the host only, lowercased. Empty string if extraction fails.
+extract_origin_host() {
+  local url="${1-}" rest host
+  [[ -n "$url" ]] || { printf ''; return; }
+
+  if [[ "$url" == *"://"* ]]; then
+    rest="${url#*://}"
+    rest="${rest#*@}"          # strip optional user@
+    host="${rest%%/*}"         # strip /path
+    host="${host%%:*}"         # strip :port
+  elif [[ "$url" == *@*:* ]]; then
+    rest="${url#*@}"
+    host="${rest%%:*}"
+  else
+    # Fallback: hostless or otherwise unrecognized form (e.g. file://-less
+    # local path). Empty host means "no known host" — caller treats this as
+    # "not GitLab" and refuses.
+    host=""
+  fi
+
+  printf '%s' "${host,,}"
+}
+
 cmd_merge_mr() {
   # Top-level "merge" — dispatches /glwf:gitlab-mr to open an MR against the
   # repo's default branch (origin/HEAD, typically main). The skill creates
@@ -1055,16 +1110,17 @@ cmd_merge_mr() {
   wt=$(current_worktree_root)
   slug=$(basename "$wt")
 
-  local origin_url
+  local origin_url origin_host
   origin_url=$(git -C "$wt" remote get-url origin 2>/dev/null || true)
   if [[ -z "$origin_url" ]]; then
     err "no 'origin' remote configured in $wt"
     exit 1
   fi
-  case "$origin_url" in
+  origin_host=$(extract_origin_host "$origin_url")
+  case "$origin_host" in
     *gitlab*) ;;
     *) err "BLOCKED: top-level merge uses /glwf:gitlab-mr, which is GitLab-only"
-       err "  origin URL is $origin_url"
+       err "  origin URL is $origin_url (host=${origin_host:-<unparsed>})"
        err "  for the parent-branch flow on any host, use TUI: worktrees > <wt> > merge-to-parent"
        exit 1
        ;;
@@ -1098,6 +1154,11 @@ cmd_merge_mr() {
     exit 1
   fi
 
+  # Defense-in-depth: both values are git-produced, so they should already be
+  # well-formed, but validating here means *any* path to dispatch is sanitised.
+  validate_branch_arg "$cur_branch" "source branch" || exit 1
+  validate_branch_arg "$default_branch" "default branch" || exit 1
+
   note "dispatching: claude --bg --name '$slug:merge' '/glwf:gitlab-mr $cur_branch $default_branch'"
   claude --bg --name "${slug}:merge" "/glwf:gitlab-mr $cur_branch $default_branch"
 }
@@ -1129,6 +1190,25 @@ cmd_merge_to_parent() {
     err "no parent branch recorded for this worktree (legacy sentinel or detached HEAD at create time)"
     err "  from CLI: QQQ_PARENT_BRANCH=<branch> qqq merge-to-parent"
     err "  from TUI: pick worktrees > <wt> > merge-to-parent (will prompt)"
+    exit 1
+  fi
+
+  # Defense against injected/malformed branch names. parent_branch can arrive
+  # from $QQQ_PARENT_BRANCH (caller env), sentinel line 3 (tamperable file),
+  # or TUI stdin (user input) — none of which git itself has validated.
+  # git check-ref-format is the canonical filter; we apply it before the
+  # value ever reaches a dispatched slash-command argv.
+  validate_branch_arg "$parent_branch" "parent branch" || exit 1
+
+  # Self-reference refuse — parity with cmd_merge_mr. A worktree branch
+  # equalling its own parent is either a misconfigured sentinel or someone
+  # invoking from the leader/parent branch itself; in both cases an MR
+  # source==target would be rejected downstream, so fail fast with a clearer
+  # message here.
+  local cur_branch
+  cur_branch=$(git -C "$wt" symbolic-ref --short HEAD 2>/dev/null || true)
+  if [[ -n "$cur_branch" && "$cur_branch" == "$parent_branch" ]]; then
+    err "refusing to open MR/PR from '$cur_branch' to itself (parent_branch resolved to the same name)"
     exit 1
   fi
 

@@ -103,6 +103,13 @@ fi
 
 mkdir -p "$(dirname "$wt_path")"
 
+# Capture leader's current branch name BEFORE creating the worktree. This is
+# the "parent branch" the new worktree forks from — used downstream by the
+# `merge-to-parent` TUI action to target the same branch when opening an
+# MR/PR. Empty when the leader is in detached-HEAD state (rare; the
+# downstream consumer handles empty via AskUserQuestion fallback).
+parent_branch=$(git -C "$leader_root" symbolic-ref --short HEAD 2>/dev/null || true)
+
 # Branch from local HEAD. Default Claude behaviour branches from origin/HEAD
 # (or the worktree.baseRef setting); using HEAD matches v3.x qqq behaviour
 # where workflows historically branch from whatever the user is on (dev/etc).
@@ -117,25 +124,29 @@ if (( qqq_mode )); then
   session_dir="$wt_path/claude-works/${date_slug}_${slug}"
   mkdir -p "$session_dir"
 
-  # Sentinel pins the active session_dir AND caller subdir. Replaces mtime-based
-  # infer_session_dir (retired in v3.3): unambiguous, lifecycle-bound to the
-  # worktree, archive-safe (merge-mr clears it when claude-works/ →
-  # claude-works-completed/).
+  # Sentinel pins the active session_dir, caller subdir, AND parent branch.
+  # Replaces mtime-based infer_session_dir (retired in v3.3): unambiguous,
+  # lifecycle-bound to the worktree, archive-safe (merge-mr clears it when
+  # claude-works/ → claude-works-completed/).
   #
-  # Format (always 2 lines for v3.3+ writers):
+  # Format (always 3 lines for v3.5+ writers):
   #   line 1: absolute session_dir
   #   line 2: caller subdir relative to wt root (empty line when caller was at
-  #           wt root). Distinguishes "root intent" (2-line, empty line 2) from
-  #           "legacy 1-line sentinel" (read_active_session_subdir falls back to
+  #           wt root). Distinguishes "root intent" (3-line, empty line 2) from
+  #           "legacy sentinel" (read_active_session_subdir falls back to
   #           empty-string for legacy sentinels rather than treating absence as
   #           root intent — the two have indistinguishable semantics in this
-  #           layer but the writer always emits 2 lines).
+  #           layer but the writer always emits all 3 lines).
+  #   line 3: parent branch name (empty when leader was in detached HEAD).
+  #           Consumed by the `merge-to-parent` TUI action via
+  #           read_active_parent_branch. Legacy 2-line sentinels return empty,
+  #           which the consumer treats as "ask the user".
   #
   # Atomic write via tmp+rename in the same directory (rename(2) is atomic on
   # the same filesystem). Reader cannot observe a partial sentinel.
   sentinel_path="$wt_path/.qqq-current-session"
   sentinel_tmp="$wt_path/.qqq-current-session.tmp.$$"
-  printf '%s\n%s\n' "$session_dir" "$subdir" > "$sentinel_tmp" \
+  printf '%s\n%s\n%s\n' "$session_dir" "$subdir" "$parent_branch" > "$sentinel_tmp" \
     || die "failed to write sentinel tmp: $sentinel_tmp"
   mv "$sentinel_tmp" "$sentinel_path" \
     || die "failed to rename sentinel: $sentinel_tmp → $sentinel_path"

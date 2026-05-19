@@ -1,7 +1,7 @@
 ---
 name: merge-mr
 description: "qqq:merge-mr — Thin wrapper around glab/gh for the qqq Phase 3 merge step. Detects host from origin URL, commits any uncommitted phase artifacts, archives `claude-works/<slug>/` to `claude-works-completed/<slug>/`, pushes the current branch, creates an MR/PR (or finds the existing one) with a description rendered from phase0/1/2/3 artifacts, then merges it. No quality gates beyond what glab/gh enforce. Quality assurance is the PR reviewer's responsibility (D1−)."
-argument-hint: "[session_dir] [--dry-run] [--no-merge]"
+argument-hint: "[session_dir] [--dry-run] [--no-merge] [--base <branch>]"
 disable-model-invocation: false
 allowed-tools: Read, Glob, Grep, Bash(git *), Bash(glab *), Bash(gh *), Bash(awk *), Bash(sed *), Bash(jq *), Bash(basename *), Bash(dirname *), Bash(pwd), Bash(wc *), Bash(head *), Bash(which *), Bash(find *), Bash(sort *), Bash(mkdir *), Bash(stat *), Bash(test *), AskUserQuestion
 model: sonnet
@@ -36,6 +36,7 @@ Reference (deprecated, do not reuse): `scripts/lib/merge-protocol.sh`, `scripts/
   - A session dir path (`claude-works/<date_slug>` inside the current worktree). If absent, resolve to the most-recently-modified session under `claude-works/` in the current worktree.
   - `--dry-run` — print actions, do nothing.
   - `--no-merge` — push + create MR/PR, do not merge.
+  - `--base <branch>` — explicit MR/PR target branch. When set, **skips the 4-step default-base resolution in step 1.6** and uses this value directly. The branch is not validated locally; if the host rejects it (branch missing, protection, etc.) the error surfaces in step 6 verbatim. Used by the `merge-to-parent` TUI action to target the worktree's parent branch (typically `dev`).
 
 ## Process
 
@@ -52,13 +53,15 @@ Reference (deprecated, do not reuse): `scripts/lib/merge-protocol.sh`, `scripts/
    - URL contains `github` → host=GitHub, CLI=`gh` (covers github.com + GitHub Enterprise)
    - Anything else (gitea, codeberg, bitbucket, raw ssh) → `BLOCKED: unsupported host — merge manually`
 5. `which <cli>` — refuse with install instructions if missing.
-6. **Default base branch resolution** (try in order, stop at first success):
-   1. `git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@'`
-   2. `git ls-remote --symref origin HEAD | awk '/^ref:/ {sub(/^refs\/heads\//,"",$2); print $2; exit}'`
-   3. Host CLI lookup:
-      - GitLab: `glab repo view --output json | jq -r .default_branch`
-      - GitHub: `gh repo view --json defaultBranchRef --jq .defaultBranchRef.name`
-   4. Ask the user via `AskUserQuestion`. Refuse to guess (`main` vs `master` is not a safe assumption).
+6. **Base branch resolution**:
+   - **If `--base <branch>` was passed in `$ARGUMENTS`, use that value directly and skip all fallbacks below.** No local validation — the host CLI will reject in step 6 if the branch is missing/protected/etc.
+   - Otherwise, try the following in order, stopping at the first success:
+     1. `git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@'`
+     2. `git ls-remote --symref origin HEAD | awk '/^ref:/ {sub(/^refs\/heads\//,"",$2); print $2; exit}'`
+     3. Host CLI lookup:
+        - GitLab: `glab repo view --output json | jq -r .default_branch`
+        - GitHub: `gh repo view --json defaultBranchRef --jq .defaultBranchRef.name`
+     4. Ask the user via `AskUserQuestion`. Refuse to guess (`main` vs `master` is not a safe assumption).
 
 ### 2. Resolve Session Directory
 
