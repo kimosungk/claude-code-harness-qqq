@@ -28,21 +28,21 @@ Turn an approved spec + tech spec + optional UI outline / NLTP into an actionabl
    - A path to `phase1-spec.md` (session dir = parent)
    - A path to the session directory itself
    - An `iterations=N` token (integer, >=1). Default **3** when absent.
-2. Required inputs in the session directory:
-   - `phase1-spec.md` (must exist — if missing, stop and ask the user for it)
+2. Required inputs in the session directory (the qqq dispatcher pre-attaches present files as `@`-mentions in your first user turn — use those attachments directly, do not re-Read):
+   - `phase1-spec.md` (required — if missing, stop and ask the user for it)
    - `phase1-tech-spec.md` (required — if missing, stop and instruct the user to run `tech-interviewer` first)
-   - `phase1-ui-outline.md` (optional; read when present)
-   - `phase1-nltp.md` (optional; read when present)
+   - `phase1-ui-outline.md` (optional; present in attachments only when it exists on disk)
+   - `phase1-nltp.md` (optional; present in attachments only when it exists on disk)
 3. Confirm the resolved session directory + iteration budget with the user.
 
 ### Phase 1: Ground in Repository Evidence
 
-1. Read the four primary inputs only:
-   - `phase1-spec.md` — full read
-   - `phase1-tech-spec.md` — **read up to the `<!-- audit-only-below — readers must stop here -->` anchor line**; do not read past it. Content past the anchor (§10 Decision Audit Trail) is autonomy-tier governance metadata and is not plan input. If the anchor is absent (e.g., grandfathered spec written before the anchor convention), read the file fully — the anchor's absence indicates pre-rule format.
-   - `phase1-ui-outline.md` — full read when present
-   - `phase1-nltp.md` — full read when present
-   - **Do not read** sidecar artifacts in the session dir: `phase1-tech-spec-scope-lint.md`, `phase1-tech-spec-sanity*.md`, `phase1-tech-spec-sanity-output.json`, `phase1-tech-spec-history.md` (if present). These are tech-interviewer process artifacts, not plan input.
+1. Use the four primary inputs that arrived pre-attached as `@`-mentions in your first user turn — do NOT call `Read` on them again. Treat the attached content as authoritative for this phase:
+   - `phase1-spec.md` — use the full attached content
+   - `phase1-tech-spec.md` — use the attached content **only up to the `<!-- audit-only-below — readers must stop here -->` anchor line**; ignore everything past it. Content past the anchor (§10 Decision Audit Trail) is autonomy-tier governance metadata and is not plan input. If the anchor is absent (grandfathered spec written before the anchor convention), use the entire file — the anchor's absence indicates pre-rule format.
+   - `phase1-ui-outline.md` — use the attached content when present (no attachment ⇒ no UI outline)
+   - `phase1-nltp.md` — use the attached content when present (no attachment ⇒ no NLTP)
+   - **Do not Read or list** sidecar artifacts in the session dir: `phase1-tech-spec-scope-lint.md`, `phase1-tech-spec-sanity*.md`, `phase1-tech-spec-sanity-output.json`, `phase1-tech-spec-history.md` (if present). These are tech-interviewer process artifacts, not plan input — they are intentionally not in the attachments.
 2. Map the spec's must-have features to concrete codebase targets using Glob/Grep/Read:
    - Existing modules the change will extend
    - Patterns to mirror (naming, file layout, test style)

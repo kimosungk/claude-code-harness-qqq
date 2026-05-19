@@ -34,7 +34,7 @@ Optimize for readability and 1:1 traceability to acceptance criteria, not for te
 
 ### Phase 1: Read & restate
 
-Read `phase1-spec.md` fully. If `phase1-ui-outline.md` exists in the same dir (`test -f`), read it too. Extract spec §1/§2/§3/§4/§6/§8/§9/§10. Restate understanding in ≤10 bullets and confirm with the user.
+The qqq dispatcher pre-attaches session inputs as `@`-mentions in your first user turn: `phase1-spec.md` (required) and `phase1-ui-outline.md` (optional — attached only when it exists on disk). Use the attached content directly — do **not** call `Read` or `test -f` on them again. Extract spec §1/§2/§3/§4/§6/§8/§9/§10. Restate understanding in ≤10 bullets and confirm with the user.
 
 ### Phase 2: Coverage scope (locked)
 

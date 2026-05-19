@@ -38,7 +38,7 @@ The user will inject a path like `./claude-works/<YYYY-MM-DD>_<feature-slug>/pha
 
 ### Phase 1: Read the Spec and State Understanding
 
-1. Read `phase1-spec.md` fully.
+1. The qqq dispatcher pre-attaches `phase1-spec.md` as an `@`-mention in your first user turn. Use that attached content directly — do **not** call `Read` on it again.
 2. Extract:
    - Core purpose (from section 1)
    - Target users and scenarios (from section 2)

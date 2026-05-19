@@ -578,6 +578,12 @@ render_phase0_issue() {
 #
 # Per-phase input map mirrors each skill's documented Phase 0 inputs. When
 # updating a skill's input contract, update the corresponding case branch.
+#
+# Invariant for `primitive_new` callers: the dispatched agent (currently
+# always `req-clarifier`) MUST keep `required=()`. `primitive_new` hands a
+# predicted session_dir that does not yet exist on disk — adding any required
+# entry would emit a spurious operator-visible warning on every `qqq new`.
+# Optional entries are safe in that path (the `[[ -f ]]` guard hides them).
 emit_at_mentions() {
   local session_dir="$1" agent="$2"
   local required=() optional=()
@@ -596,14 +602,24 @@ emit_at_mentions() {
       required=(phase1-spec.md phase1-tech-spec.md)
       optional=(phase1-ui-outline.md phase1-nltp.md) ;;
     code-implementer)
-      required=(phase2-code-plan.md)
+      # phase2-review-state.json is the D1− prerequisite gate per
+      # skills/code-implement/SKILL.md §Phase 0 — the implementer must reject
+      # the run when it is absent or `review_loop_completed != true`.
+      required=(phase2-code-plan.md phase2-review-state.json)
       optional=(phase1-tech-spec.md phase1-nltp.md) ;;
     *)
       return 0 ;;
   esac
   local f
   for f in "${required[@]}"; do
-    printf '@%s/%s\n' "$session_dir" "$f"
+    if [[ -f "$session_dir/$f" ]]; then
+      printf '@%s/%s\n' "$session_dir" "$f"
+    else
+      # Required-missing: emit operator-visible warning but skip the @-mention
+      # to avoid handing Claude Code a broken file reference. The skill body's
+      # own Phase 0 check will surface the user-facing error.
+      printf '[qqq] WARNING: required input missing: %s/%s\n' "$session_dir" "$f" >&2
+    fi
   done
   for f in "${optional[@]}"; do
     [[ -f "$session_dir/$f" ]] && printf '@%s/%s\n' "$session_dir" "$f"

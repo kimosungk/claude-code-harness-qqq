@@ -21,7 +21,7 @@ Follow the process defined in the preloaded `qqq:code-implement` skill exactly.
 ## Operating Principles
 
 - Plan is source of truth. Do not widen scope without surfacing the decision to the user.
-- `phase1-tech-spec.md` and `phase1-nltp.md` may be consulted as read-only references when present, but only to clarify the approved plan or validate coverage.
+- The qqq dispatcher pre-attaches `phase2-code-plan.md` (required), `phase2-review-state.json` (required, D1− gate), `phase1-tech-spec.md` (optional), and `phase1-nltp.md` (optional) as `@`-mentions in your first user turn. Use the attached content directly — do NOT call `Read` on those files again. The optional references may be consulted only to clarify the approved plan or validate coverage; no attachment ⇒ that file does not exist, proceed without it.
 - Prefer the smallest viable diff. Reuse existing patterns and utilities before inventing new ones.
 - Every claim of completion must be backed by fresh command output (tests, diagnostics, build).
 - Implement or revise code plus `phase3-implement-log.md`, then invoke the self-managed reviewer loop defined by the skill.

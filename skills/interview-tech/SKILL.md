@@ -99,11 +99,13 @@ Record as **Scope Decision** in `phase1-tech-spec.md` metadata. Effect:
 
 ### Phase 1: Read Inputs & Restate Understanding
 
-1. Read `phase1-spec.md` fully.
-2. `Bash(test -f ...)` for `phase1-ui-outline.md` and `phase1-nltp.md`; read each when present.
-3. Glob repo structure (no deep reads yet). You MAY and SHOULD `Read` implementation files — services, stores, hooks, configs, schemas, types, tests. This is the opposite of `req-clarifier`.
-4. Restate understanding in ≤10 bullets: core purpose, Must-Have features, user-visible behavior the tech must support, inherited tech constraints (from §7 Deferred Decisions), adjacent existing features.
-5. Confirm: "Does this match what the tech spec must support?"
+1. The qqq dispatcher pre-attaches the session inputs as `@`-mentions in your first user turn. Use that attached content directly — do **not** call `Read` or `test -f` on them again:
+   - `phase1-spec.md` (required — use the full attached content)
+   - `phase1-ui-outline.md` (optional — present in attachments only when it exists on disk; no attachment ⇒ no UI outline)
+   - `phase1-nltp.md` (optional — present in attachments only when it exists on disk; no attachment ⇒ no NLTP)
+2. Glob repo structure (no deep reads yet). You MAY and SHOULD `Read` implementation files — services, stores, hooks, configs, schemas, types, tests. This is the opposite of `req-clarifier`.
+3. Restate understanding in ≤10 bullets: core purpose, Must-Have features, user-visible behavior the tech must support, inherited tech constraints (from §7 Deferred Decisions), adjacent existing features.
+4. Confirm: "Does this match what the tech spec must support?"
 
 ### Phase 2: Tech Dimension Selection
 
