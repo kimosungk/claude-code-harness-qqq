@@ -118,18 +118,19 @@ If the user picks "re-run", stop the interview and hand off; do not apply the 3r
 
 **In-progress draft handling** — when the user picks "re-run":
 1. Rename the in-progress `phase1-tech-spec.md` to `phase1-tech-spec.draft.md` so the rubric scores, evidence, and prior decisions are preserved as scratch input for the next tech-interviewer round.
-2. The renamed `.draft.md` does NOT contain the `Status: Approved by user` block, so the protect-files hook does not freeze it.
+2. The renamed `.draft.md` simply sits in the session dir alongside the other artifacts — the protect-files hook never branched on `Status: Approved by user` to begin with, so the file's "draft" status is enforced by operator discipline (and by every other phase agent's `tools:` allowlist omitting Edit), not by any hook-level filename or content check.
 3. The accumulated §8 entries from `phase1-tech-spec.draft.md` plus the in-flight `phase1-spec.md` amendments become the input to req-clarifier.
 4. Tell the user explicitly: "Saved current draft as `phase1-tech-spec.draft.md`. After req-clarifier completes, re-invoke tech-interviewer; you can reference the draft for prior rubric scoring."
 
 This contract works with the qqq workflow's `rewind` action: a rewind to phase 1 will not delete `phase1-tech-spec.draft.md` because it is not in the rewind target list (only `phase1-tech-spec.md` is). If the user wants a clean slate, they can manually remove the draft file.
 
-## Why the Gate Matters Even Though the Hook Allow-Lists You
+## Why the Gate Matters Even Though No Hook Enforces It
 
-The protect-files hook (`hooks/qqq-protect-files.sh` — search for the `req-clarifier` artifact-owner branch that allow-lists `tech-interviewer` as an additional permitted writer of `phase1-spec.md`) carves out `tech-interviewer` for `phase1-spec.md` edits. This means:
+The protect-files hook (`hooks/qqq-protect-files.sh`) does NOT inspect `phase1-spec.md` content, branch on the editing agent, or maintain any per-agent allow-list. Earlier versions of this reference described a `req-clarifier` artifact-owner branch and a `tech-interviewer` allow-list inside the hook — neither exists today (they were retired with `.qqq.lock` and the v2.3 launcher rewrite). The current hook only blocks Edit/Write/Bash against `claude-works-completed/*`, the post-merge archive.
 
-- The hook **trusts** you to follow the Gate atomic sequence.
-- Free-hand edits (no diff prompt, no user approval, no §8 append) **will succeed silently** at the hook level.
-- The Gate is therefore the only enforcement mechanism for spec invariants — there is no second line of defense.
+What actually keeps `phase1-spec.md` safe from drive-by edits:
+
+- Every phase agent except `qqq:tech-interviewer` omits `Edit(./claude-works/**)` from its `tools:` allowlist — so a downstream session physically cannot mutate `phase1-spec.md` even if it tried.
+- `qqq:tech-interviewer` retains Edit access **so that this gate can rewrite the file**. There is no hook-level second line of defense; this gate is the enforcement mechanism. Free-hand edits (no diff prompt, no user approval, no §8 append) succeed silently — nothing catches them.
 
 This is why the atomic skeleton is in `SKILL.md` (not deferred to this reference) — even if you skip reading this file, the inline skeleton must be followed. This file deepens your understanding; the skeleton is mandatory.

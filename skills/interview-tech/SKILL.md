@@ -163,7 +163,7 @@ No hard cap. Soft guard: if the same dimension survives 3 rounds without resolut
 
 ### Phase 4: Phase1 Amendment Gate
 
-Triggered when (a) `phase1-spec.md` has a gap blocking a tech decision, OR (b) an autonomous decision would violate frozen UX. The protect-files hook allow-lists `tech-interviewer` for `phase1-spec.md` edits — it will NOT catch a free-hand edit. The atomic skeleton below is the only safe path.
+Triggered when (a) `phase1-spec.md` has a gap blocking a tech decision, OR (b) an autonomous decision would violate frozen UX. The protect-files hook does NOT inspect `phase1-spec.md` content or branch on which agent is editing — `tech-interviewer` reaches `phase1-spec.md` purely because its `tools:` allowlist includes `Edit(./claude-works/**)` while every other phase agent omits it. The hook will not catch a free-hand edit either; the atomic skeleton below is the only safe path.
 
 **Atomic skeleton (must execute inline, never skip):**
 
@@ -305,7 +305,14 @@ Stop and wait for explicit user approval. The file at this point is still `Statu
 
 #### Step 4 — On explicit user approval (`ok` / `approve` / `proceed` / `확정` / `다음 단계`)
 
-Append the closing block — this is the freeze trigger. The protect-files hook reads `Status: Approved by user` and freezes the file.
+Append the closing block. The `Status: Approved by user` line is the **user-visible** freeze marker — it tells downstream readers (code-planner, code-implementer, the merge-mr description renderer, and the human PR reviewer) that the spec is locked.
+
+**What the marker is and is NOT enforced by**:
+
+- It is **NOT** enforced by `hooks/qqq-protect-files.sh`. That hook only blocks Edit/Write/Bash against `claude-works-completed/` (the post-merge archive). It does not parse phase1-*.md content or branch on this label. Earlier versions of this skill described the hook as "reading `Status: Approved by user` and freezing the file" — that was inaccurate.
+- It **is** enforced de facto by the agent permission model. Every phase agent except `qqq:tech-interviewer` has Edit removed from its `tools:` allowlist (see each agent's frontmatter), so post-Step-4 a downstream phase agent cannot modify `phase1-tech-spec.md` even if it tried. `qqq:tech-interviewer` keeps Edit access on purpose so the Amendment Gate (Phase 4 of this skill) can revise `phase1-spec.md` through the atomic sequence; that gate is an operational discipline, not a hook-level constraint.
+
+Operationally this means: once you write the `Status: Approved by user` block, do not free-hand-edit the file from a future tech-interviewer session — re-enter the Amendment Gate, which records the change in §7.
 
 The freeze block has two parts split by the audit anchor:
 
