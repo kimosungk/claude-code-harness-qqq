@@ -549,6 +549,7 @@ cmd_merge_mr() {
 # Gates:
 #   G5  claude --version >= required                          (cheap)
 #   G6  fzf / jq / glab / sha256                              (cheap)
+#   G7  codex availability (informational; absence ≠ failure) (cheap)
 #   G1  v3.2 dispatch CLI options: --bg + --worktree + --name +
 #       --permission-mode bypassPermissions + positional prompt
 #       (the --append-system-prompt-file slot of v3.1 was replaced by the
@@ -871,10 +872,13 @@ cmd_verify() {
         cat <<'EOF'
 usage: qqq verify [--cheap-only]
 
-  G5 / G6                cheap (always run)
-  G1 / G2                live bg session round-trip (~2-3 min, costs API tokens)
+  G5 / G6 / G7           cheap (always run)
+  G1 / G2                live bg session round-trip (~3-5 min, costs API tokens)
   G4                     resume regression guard (~1 min, optional)
   G3                     manual — see notes after run
+
+  G7 is informational only — `codex` is optional; absence means all
+  Codex-first reviewers will use Claude fallback.
 
 Use --cheap-only to skip G1/G2/G4 (suitable for CI cron / pre-commit).
 EOF
@@ -904,6 +908,22 @@ EOF
     verify_log G6 "PASS — fzf, jq, glab, sha256sum present"
   else
     fails+=("G6: missing — ${g6[*]}")
+  fi
+
+  # G7 — informational: codex availability. Not a failure when absent (Codex
+  # is an optional dependency — every reviewer skill falls back to Claude
+  # when `codex` is missing or fails for infrastructure reasons), but the
+  # operator should know up-front so a sudden quality shift to Claude review
+  # is never silent. Print one of three forms:
+  #   • PASS: codex on PATH at <path>  (<version line>)
+  #   • INFO: codex absent — all Codex-first reviewers will use Claude fallback
+  if command -v codex >/dev/null 2>&1; then
+    local codex_path codex_ver
+    codex_path=$(command -v codex)
+    codex_ver=$(codex --version 2>/dev/null | head -1)
+    verify_log G7 "PASS — codex at $codex_path ($codex_ver)"
+  else
+    verify_log G7 "INFO — codex absent; all Codex-first reviewers will use Claude fallback"
   fi
 
   if (( skip_live == 0 )); then
