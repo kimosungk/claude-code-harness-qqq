@@ -31,6 +31,8 @@ Scope guardrail: qqq stays bash-only and lightweight. Anything that requires a r
 
 - [ ] `--non-interactive` mode for scripted smoke tests
 - [ ] Surface the `--merge-resume-push` flag in the action menu when a prior merge failed to push (currently CLI-only)
+- [x] Blank `qqq new <slug>` started bg session with zero user context — *resolved in v3.2 via `-m TEXT` injected into initial prompt; see MIGRATION_PLAN §12*
+- [x] Phase dispatch used slash-command only (no agent system prompt / tool restrictions) — *resolved in v3.2 via `--agent qqq:<agent>` + `--permission-mode bypassPermissions`*
 
 ## 5. Documentation
 

@@ -421,4 +421,51 @@ Claude Code v2.1.141 기준, 2026-05-14 검증:
 
 ---
 
-*Plan v2.3 by Claude (Opus 4.7), based on user decisions and Codex thread a582b0a0926c02783.*
+## 12. v3.2 — `--agent` dispatch 전환 (부록)
+
+**Date**: 2026-05-19
+**Scope**: phase 진입 형태를 슬래시 커맨드(`/qqq:<skill>`)에서 plugin-scoped agent(`--agent qqq:<agent>`)로 전환. `--append-system-prompt-file` 폐기 + initial-prompt 인라인 합류.
+
+### 결정 사항
+
+| | 결정 |
+|---|---|
+| AG-1 | 모든 phase dispatch는 `claude --bg --agent qqq:<agent> --name <slug>:<agent> --permission-mode bypassPermissions "<initial prompt>"` 형태로 통일. session name은 phase 번호(`:phase1`) 대신 **agent 이름**(`:req-clarifier`)을 단다. |
+| AG-2 | `--permission-mode bypassPermissions` 도입. 백그라운드 `auto-deny` 회피 + 권한 prompt 스킵. `AskUserQuestion`은 권한 게이트가 아니라 사용자 대화 흐름 영향 없음. |
+| AG-3 | `phase0-issue.md` 본문 + `qqq new -m TEXT` brief가 **첫 user turn의 인라인 텍스트**로 합류. `--append-system-prompt-file` 제거. session_dir은 `session_dir=<abs>` 한 줄로 같은 prompt 안에 포함. |
+| AG-4 | aux flow(skill-only: `rebase-conflict-resolve`/`ui-verify`/`debug-frontend-pw`)는 기존 슬래시 dispatch 유지 (`primitive_dispatch_slash`). 매칭 agent가 없는 skill 보존. |
+| AG-5 | 슬래시 진입(`/qqq:<skill> <session_dir>`)도 별개로 살아있다 — agent dispatch와 **이중 진입점**. 사용자가 attach 후 임의 시점에 호출 가능. |
+
+### 구현 위치
+
+| 변경 | 파일 |
+|---|---|
+| `build_initial_prompt` 신설 + `primitive_dispatch_phase` agent 방식 + `primitive_dispatch_slash` aux용 | `scripts/qqq:335-394` |
+| `cmd_clarify/ui/nltp/tech_spec/plan/implement` agent 이름 매핑 | `scripts/qqq:489-495` |
+| `cmd_new` 인자 파서에 `-m`/`--message` 추가 | `scripts/qqq:477-492` |
+| `primitive_new` brief + issue를 initial prompt에 합류 | `scripts/qqq:404-458` |
+| `tui_aux_flow` aux 라인 | `scripts/qqq:943` |
+| `hooks/qqq-context.sh` next 안내문 agent 이름 노출 | `hooks/qqq-context.sh:28-41` |
+
+### 무수정 영역 (검증 완료)
+
+- 13 agent 파일 — 전부 `skills: - qqq:<skill>` 프론트매터 보유. preload 인프라 완비.
+- 14 skill 파일 — agent 메인 thread 환경에서도 sub-agent 호출(`Task(subagent_type: ...)`) 정상 (docs: "main thread agent can spawn subagents").
+- `hooks/hooks.json` / `hooks/qqq-protect-files.sh` — session name·intent 라벨 무관.
+
+### 사이드이펙트
+
+- `state.json.intent` 필드 = 슬래시 커맨드 텍스트 기반이라 agent 모드에서 비어있을 수 있음. fzf 라벨에 "— intent"가 비더라도 `--name`이 `<slug>:<agent>`라 식별 정보 손실 없음 — 무수정 결정 (D1-가).
+- `--bg`가 frontmatter `background: false`를 override함 — 실증 완료.
+- `bypassPermissions` 도입으로 `claude-works-completed/` write 차단 hook은 그대로 동작 (권한이 아닌 hook 경로).
+
+### 공식 docs 근거
+
+- "Pass `--agent <name>` to start a session where the main thread itself takes on that subagent's system prompt, tool restrictions, and model" (code.claude.com/docs/en/sub-agents)
+- "skills: Skills to preload into the subagent's context at startup. The full skill content is injected, not just the description."
+- "If the parent uses `bypassPermissions` or `acceptEdits`, this takes precedence and cannot be overridden."
+- "When an agent runs as the main thread with `claude --agent`, it can spawn subagents using the Agent tool."
+
+---
+
+*Plan v2.3 by Claude (Opus 4.7), based on user decisions and Codex thread a582b0a0926c02783. v3.2 appendix added 2026-05-19.*

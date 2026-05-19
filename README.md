@@ -169,13 +169,14 @@ rm -rf ~/.claude/plugins/local/hskim-plugins/plugins/qqq
 |---|---|
 | `qqq` | TUI 진입 (fzf 메뉴) |
 | `qqq new <slug>` | 이슈 없이 새 worktree에서 빈 세션 시작 |
-| `qqq new <slug> --issue N` | GitLab 이슈를 fetch → worktree 안에 `phase0-issue.md` 작성 → Phase 1 dispatch |
-| `qqq clarify` | `/qqq:clarify-requirement`를 새 bg 세션으로 dispatch |
-| `qqq ui` | `/qqq:ui-outline` dispatch (선택) |
-| `qqq nltp` | `/qqq:interview-nltp` dispatch (선택) |
-| `qqq tech-spec` | `/qqq:interview-tech` dispatch |
-| `qqq plan` | `/qqq:code-plan` dispatch |
-| `qqq implement` | `/qqq:code-implement` dispatch |
+| `qqq new <slug> -m "TEXT"` | 빈 세션 + 사용자 요구사항을 첫 agent turn에 주입 |
+| `qqq new <slug> --issue N` | GitLab 이슈 fetch → worktree에 `phase0-issue.md` 작성 → Phase 1 dispatch |
+| `qqq clarify` | agent `qqq:req-clarifier` 를 새 bg 세션으로 dispatch |
+| `qqq ui` | agent `qqq:ui-outliner` dispatch (선택) |
+| `qqq nltp` | agent `qqq:nltp-interviewer` dispatch (선택) |
+| `qqq tech-spec` | agent `qqq:tech-interviewer` dispatch |
+| `qqq plan` | agent `qqq:code-planner` dispatch |
+| `qqq implement` | agent `qqq:code-implementer` dispatch |
 | `qqq attach <id>` | `claude attach <id>` |
 | `qqq pick` | fzf → `claude attach` |
 | `qqq logs [<id>]` / `qqq stop [<id>]` / `qqq rm [<id>]` | `claude logs/stop/rm` 래퍼 (id 없으면 fzf) |
@@ -184,7 +185,23 @@ rm -rf ~/.claude/plugins/local/hskim-plugins/plugins/qqq
 
 ### 페이즈 전환 계약 (F1=b)
 
-모든 페이즈 명령은 **새 백그라운드 세션 dispatch**. 페이즈 전환에 `--resume`을 쓰지 않는다. 다음 페이즈 skill은 worktree의 `claude-works/<date_slug>/` 안 `phase{N-1}-*.md`를 disk에서 직접 읽는다.
+모든 페이즈 명령은 **새 백그라운드 세션 dispatch**. 페이즈 전환에 `--resume`을 쓰지 않는다. dispatch 형태는 다음과 같이 표준화되어 있다:
+
+```bash
+claude --bg \
+  --agent "qqq:<agent>" \
+  --name "<slug>:<agent>" \
+  --permission-mode bypassPermissions \
+  "<initial prompt: session_dir=<abs> + brief + issue 본문>"
+```
+
+- `--agent qqq:<agent>` — 메인 thread의 system prompt를 agent 정의로 치환. agent의 `skills:` 프론트매터로 대응 skill이 자동 preload된다.
+- `--permission-mode bypassPermissions` — TTY 없는 백그라운드에서 권한 prompt 자동 거부를 피한다. `AskUserQuestion`은 권한 게이트가 아니므로 사용자 대화 흐름은 영향 없음.
+- positional prompt = 첫 user turn. `phase0-issue.md` 본문과 `qqq new -m TEXT` brief는 모두 이 한 덩어리에 합쳐져 들어간다 (`--append-system-prompt-file` 제거).
+
+다음 페이즈 agent는 worktree의 `claude-works/<date_slug>/` 안 `phase{N-1}-*.md`를 disk에서 직접 읽는다.
+
+> 슬래시 진입(`/qqq:<skill> <session_dir>`)도 별개로 살아있다. 사용자가 attach 후 임의 시점에 호출 가능 — agent dispatch와 이중 진입점 관계.
 
 ### 경쟁 + 격리 (CLI-9)
 
@@ -207,7 +224,7 @@ rm -rf ~/.claude/plugins/local/hskim-plugins/plugins/qqq
 
 | 컴포넌트 | 목적 |
 |---|---|
-| `qqq new <slug> --issue N` (CLI) | `glab`로 GitLab 이슈 fetch → 새 worktree 안에 `phase0-issue.md` 스냅샷 + auto-commit → `--append-system-prompt-file phase0-issue.md`로 Phase 1 dispatch. CLI가 소유하며 `phase0-issue.md`는 모든 phase agent에게 read-only. |
+| `qqq new <slug> --issue N` (CLI) | `glab`로 GitLab 이슈 fetch → 새 worktree 안에 `phase0-issue.md` 스냅샷 + auto-commit → 본문이 Phase 1 agent의 **첫 user turn**에 인라인 주입된다(`--append-system-prompt-file`은 v3.2에서 폐기됨). CLI가 소유하며 `phase0-issue.md`는 모든 phase agent에게 read-only 자료로 남는다. |
 
 ### Phase 1 — Clarify
 
