@@ -282,7 +282,7 @@ qqq의 페이즈 게이팅은 v3.0에서 *의도적으로 약화*됐다. Phase 2
 
 1. **PR 리뷰가 최종 QA**. phase 게이트는 *권장 흐름*일 뿐, validation이 아니다. 코드 정확성은 MR/PR의 사람 reviewer 책임.
 2. **페이즈 스킵은 운영자 판단**. Phase 2 진입에 `phase1-spec.md`가 필수는 아니다 — 다만 계획 품질이 떨어질 뿐.
-3. **리뷰 후 계획 수정은 Phase 3 재리뷰를 우회한다**. dispatch 시점 fingerprint 강제 없음.
+3. **리뷰 후 계획 수정은 Phase 3 재리뷰를 우회한다**. dispatch 시점 fingerprint 강제 없음 — 단 implementer가 진입 시 plan sha256과 리뷰 시점 fingerprint 불일치를 감지하면 `[warn]` 한 줄을 출력한다 (warn-only, D1−와 호환).
 
 트레이드오프는 `MIGRATION_PLAN.md §9.4`에 기록.
 

@@ -34,6 +34,13 @@ The loop is: execute plan → verify locally → invoke Codex-backed reviewer �
 2. Required inputs in the session directory:
    - `phase2-code-plan.md`
    - `phase2-review-state.json` with `review_loop_completed: true` — **D1− prerequisite gate**. Parse the JSON; if the file is absent, unreadable, or the flag is anything other than the boolean `true`, output exactly the line `prerequisite invalid: phase2 review loop not completed` and stop. Do not proceed to read the plan.
+   - **D1− advisory — plan-fingerprint drift check (warn-only, never blocking)**. After the prerequisite gate above passes:
+     1. Compute `current_plan_fp = "sha256:" + sha256(<phase2-code-plan.md>)` (prefer `shasum -a 256`, fall back to `sha256sum`).
+     2. Read `reviewed_fp = .gates.critic.last_input_fingerprint` from `phase2-review-state.json`.
+     3. If `reviewed_fp` is missing, empty, or not a string, **skip the comparison silently** — fingerprint tracking is advisory and must not regress legacy state files.
+     4. If both fingerprints are present and they differ, print exactly one line:
+        `[warn] plan fingerprint drift since review — current=<current_plan_fp> reviewed=<reviewed_fp>; implementing without re-review (D1−)`
+        Then proceed with implementation. Do **not** stop. D1−'s "no validation" stance is preserved (the run is not blocked); the warning exists so plan drift surfaces here instead of in a confused PR review.
    - `phase1-tech-spec.md` and `phase1-nltp.md` are optional siblings; if present, they may be consulted as read-only references after the plan is read
 3. Confirm the resolved session directory + iteration budget with the user.
 
