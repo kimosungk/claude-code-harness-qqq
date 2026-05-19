@@ -205,6 +205,47 @@ fzf_pick() {
   fzf --prompt="$prompt" --height=40% --reverse --no-multi "$@"
 }
 
+# tui_pick — fzf_pick + double-tap-cancel detection for the TUI flows.
+#
+# fzf collapses Ctrl+C and ESC into the same exit code 130 (per `man fzf`
+# EXIT STATUS). Because fzf catches SIGINT internally and exits cleanly, the
+# parent's `trap _tui_sigint INT` does not fire from inside any fzf
+# invocation — so the v3.5 plan of "Ctrl+C twice to quit" silently became
+# "neither Ctrl+C nor ESC can quit from a nested menu". Empirically this
+# reproduces as "Ctrl+C in worktrees → worktree-action just pops one level
+# and never quits the TUI."
+#
+# Fix: every TUI menu picker goes through `tui_pick`. On fzf exit code 130
+# (Ctrl+C OR ESC), this function applies the same double-tap heuristic the
+# trap used to, only inside-band: a single cancel pops one level (caller
+# sees empty result + non-zero return — already the existing flow); a
+# second cancel within QQQ_CTRL_C_DOUBLE_TAP_S seconds exits with 130.
+#
+# Trade-off: ESC and Ctrl+C are indistinguishable to fzf, so the double-tap
+# also fires on two quick ESC presses. That is acceptable — a fast double
+# cancel is a reasonable "get me out" gesture either way; a slow ESC just
+# pops one level as before.
+#
+# Non-TUI fzf callers (pick_job_id used by cmd_attach / cmd_logs / cmd_stop
+# / cmd_rm) keep using fzf_pick directly — they do not want quit semantics.
+tui_pick() {
+  local result rc now
+  result=$(fzf_pick "$@")
+  rc=$?
+  if (( rc == 130 )); then
+    now=$(date +%s 2>/dev/null) || now=0
+    if (( now - QQQ_LAST_SIGINT < QQQ_CTRL_C_DOUBLE_TAP_S )); then
+      printf '\n[qqq] cancel twice — quitting TUI\n' >&2
+      exit 130
+    fi
+    QQQ_LAST_SIGINT="$now"
+    printf '\n[qqq] (cancel again within %ss to quit; single cancel pops one level)\n' \
+      "$QQQ_CTRL_C_DOUBLE_TAP_S" >&2
+  fi
+  printf '%s' "$result"
+  return $rc
+}
+
 # Show jobs in fzf, return the chosen short id (or empty on cancel).
 pick_job_id() {
   local prompt="${1:-job > }"
@@ -796,8 +837,18 @@ cmd_tech_spec() { ensure_in_worktree_for_phase; ensure_dispatch_ok; primitive_di
 
 # code-plan and code-implement accept `--iteration N` so the user (or the TUI)
 # can pin a review-loop iteration count. The value is forwarded to the agent
-# via build_initial_prompt's `ITERATION=<N>` line. Omit the flag to skip the
-# line entirely (current default behaviour).
+# via build_initial_prompt's `ITERATION=<N>` line.
+#
+# When the user does not pass -i / --iteration, the value falls back to the
+# shared default `QQQ_DEFAULT_ITERATION` (3). Previously the absence of -i
+# meant "skip the ITERATION line entirely" and the skill body's own default
+# (3 in both code-plan and code-implement SKILL.md) silently filled the gap.
+# That implicit chain was correct but invisible — operators had no way to
+# see what budget the run would use without reading the skill body. Making
+# the default explicit at dispatch time surfaces the intended budget in the
+# session log and keeps the CLI/TUI/SKILL stories aligned.
+QQQ_DEFAULT_ITERATION=3
+
 _parse_iteration_arg() {
   local val=""
   while (( $# > 0 )); do
@@ -807,9 +858,10 @@ _parse_iteration_arg() {
       *) die "unknown option: $1 (only -i/--iteration N is accepted)" ;;
     esac
   done
-  if [[ -n "$val" ]]; then
-    [[ "$val" =~ ^[0-9]+$ ]] || die "iteration must be a non-negative integer: $val"
+  if [[ -z "$val" ]]; then
+    val="$QQQ_DEFAULT_ITERATION"
   fi
+  [[ "$val" =~ ^[0-9]+$ ]] || die "iteration must be a non-negative integer: $val"
   printf '%s' "$val"
 }
 
@@ -1319,7 +1371,7 @@ tui_main_menu() {
     opts+=("✖  quit")
 
     local picked
-    picked=$(printf '%s\n' "${opts[@]}" | fzf_pick 'qqq > ')
+    picked=$(printf '%s\n' "${opts[@]}" | tui_pick 'qqq > ')
     # ESC / Ctrl+C / explicit ✖ → leave main menu (= exit qqq)
     [[ -n "$picked" ]] || return 0
 
@@ -1344,7 +1396,7 @@ tui_new_flow() {
   choice=$(printf '%s\n' \
     "from-issue   Pick a GitLab issue (glab issue list) → auto-slug → confirm" \
     "blank        Just type a slug" \
-    | fzf_pick 'new > ' --delimiter=' ' --with-nth=1,2,3 --accept-nth=1
+    | tui_pick 'new > ' --delimiter=' ' --with-nth=1,2,3 --accept-nth=1
   )
   [[ -n "$choice" ]] || return 0
 
@@ -1354,7 +1406,7 @@ tui_new_flow() {
       local iid_line iid title slug_suggest slug
       iid_line=$(glab issue list --output json 2>/dev/null \
         | jq -r '.[] | "\(.iid)\t\(.title)"' \
-        | fzf_pick 'issue > ' --delimiter=$'\t' --with-nth=1,2)
+        | tui_pick 'issue > ' --delimiter=$'\t' --with-nth=1,2)
       [[ -n "$iid_line" ]] || return 0
       iid=$(printf '%s' "$iid_line" | cut -f1)
       title=$(printf '%s' "$iid_line" | cut -f2)
@@ -1401,7 +1453,7 @@ tui_worktree_flow() {
     picked=$(
       printf '%s\n' "$rows" \
         | awk -F'\t' '{ printf "%s\t%-30s [%s]  branch=%s\n", $1, $2, $4, $3 }' \
-        | fzf_pick 'worktree > ' --delimiter=$'\t' --with-nth=2 --accept-nth=1
+        | tui_pick 'worktree > ' --delimiter=$'\t' --with-nth=2 --accept-nth=1
     )
     [[ -n "$picked" ]] || return 0
 
@@ -1422,7 +1474,7 @@ tui_worktree_action_flow() {
       "claude-sessions     Pick a background session in this worktree (attach/logs/stop/remove-session)" \
       "next-phase          Dispatch the next phase (clarify/ui/nltp/tech-spec/plan/implement)" \
       "remove-worktree     Stop all sessions, then 'git worktree remove' + 'git branch -D'" \
-      | fzf_pick "$slug > " --delimiter=' ' --accept-nth=1
+      | tui_pick "$slug > " --delimiter=' ' --accept-nth=1
     )
     [[ -n "$action" ]] || return 0
 
@@ -1457,7 +1509,7 @@ tui_worktree_sessions_flow() {
     picked=$(
       printf '%s\n' "$rows" \
         | awk -F'\t' '{ printf "%s\t%s [%s] %s\n", $1, $1, $2, $3 }' \
-        | fzf_pick "$slug sessions > " --delimiter=$'\t' --with-nth=2 --accept-nth=1
+        | tui_pick "$slug sessions > " --delimiter=$'\t' --with-nth=2 --accept-nth=1
     )
     [[ -n "$picked" ]] || return 0
 
@@ -1467,7 +1519,7 @@ tui_worktree_sessions_flow() {
       "logs            Tail recent output" \
       "stop            Stop (keeps conversation)" \
       "remove-session  claude rm — removes session + Claude-managed worktree (qqq worktrees are user-managed and survive)" \
-      | fzf_pick "$picked > " --delimiter=' ' --accept-nth=1
+      | tui_pick "$picked > " --delimiter=' ' --accept-nth=1
     )
     [[ -n "$action" ]] || continue   # ESC at action picker → back to session list
 
@@ -1513,26 +1565,30 @@ tui_next_phase_flow() {
     "tech-spec   /qqq:interview-tech" \
     "plan        /qqq:code-plan" \
     "implement   /qqq:code-implement" \
-    | fzf_pick 'next phase > ' --delimiter=' ' --accept-nth=1
+    | tui_pick 'next phase > ' --delimiter=' ' --accept-nth=1
   )
   [[ -n "$phase" ]] || return 0
 
-  # code-plan / code-implement accept --iteration N. Prompt once for the
-  # value here so TUI users don't need to drop to the CLI. Empty input =
-  # no ITERATION= line in the prompt (current default).
+  # code-plan / code-implement accept --iteration N. Prompt once here so TUI
+  # users don't need to drop to the CLI. Empty input falls through to
+  # QQQ_DEFAULT_ITERATION (3) just like the CLI's `qqq plan` / `qqq implement`
+  # without -i — the dispatched prompt always carries an explicit ITERATION=
+  # line.
   local iter_args=()
   case "$phase" in
     plan|implement)
-      printf 'ITERATION (default empty = skip): ' >&2
+      printf 'ITERATION (default %s, enter to accept): ' "$QQQ_DEFAULT_ITERATION" >&2
       local iter
       read -r iter || iter=""
       if [[ -n "$iter" ]]; then
         if [[ "$iter" =~ ^[0-9]+$ ]]; then
           iter_args=(--iteration "$iter")
         else
-          err "iteration must be a non-negative integer — ignoring input '$iter'"
+          err "iteration must be a non-negative integer — using default $QQQ_DEFAULT_ITERATION"
         fi
       fi
+      # When iter_args is empty, cmd_plan / cmd_implement will resolve the
+      # default through _parse_iteration_arg. No explicit forwarding needed.
       ;;
   esac
 
@@ -1699,7 +1755,7 @@ tui_aux_flow() {
     "rebase-conflict-resolve   /qqq:rebase-conflict-resolve" \
     "ui-verify                 /qqq:ui-verify" \
     "debug-frontend-pw         /qqq:debug-frontend-pw" \
-    | fzf_pick 'aux > ' --delimiter=' ' --accept-nth=1
+    | tui_pick 'aux > ' --delimiter=' ' --accept-nth=1
   )
   [[ -n "$skill" ]] || return 0
   ensure_in_worktree_for_phase
@@ -1725,8 +1781,8 @@ usage: qqq [command] [args]
   ui                   Dispatch agent qqq:ui-outliner (Optional)
   nltp                 Dispatch agent qqq:nltp-interviewer (Optional)
   tech-spec            Dispatch agent qqq:tech-interviewer
-  plan      [-i N]     Dispatch agent qqq:code-planner    (optional --iteration N → ITERATION=N in first turn)
-  implement [-i N]     Dispatch agent qqq:code-implementer (optional --iteration N → ITERATION=N in first turn)
+  plan      [-i N]     Dispatch agent qqq:code-planner    (--iteration N, default 3 → ITERATION=N in first turn)
+  implement [-i N]     Dispatch agent qqq:code-implementer (--iteration N, default 3 → ITERATION=N in first turn)
   attach <id>          claude attach <id>
   pick                 fzf → claude attach
   logs   [<id>]        claude logs   (fzf if no id)
