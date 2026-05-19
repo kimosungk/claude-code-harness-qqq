@@ -1,7 +1,7 @@
 {
   "name": "qqq",
-  "description": "Three-phase development harness for Claude Code v2.1.139+. Drives Socratic requirement clarification -> reviewed code plan -> reviewed implementation through 13 phase agents + 14 slash skills. The scripts/qqq CLI + fzf TUI dispatches each phase as a fresh background session (claude --bg / --worktree); two project-local hooks (qqq-protect-files, qqq-context) provide minimal artifact protection and session-start reminders. Quality assurance is the PR reviewer's responsibility (D1- gate model).",
-  "version": "3.0.0",
+  "description": "Three-phase development harness for Claude Code v2.1.139+. Drives Socratic requirement clarification -> reviewed code plan -> reviewed implementation through 13 phase agents + 14 slash skills. The scripts/qqq CLI + fzf TUI dispatches each phase as a fresh background session (claude --bg / --worktree); two plugin-level hooks (qqq-protect-files, qqq-context) provide minimal artifact protection and session-start reminders. Quality assurance is the PR reviewer's responsibility (D1- gate model).",
+  "version": "3.1.0",
   "author": {
     "name": "hskim"
   },

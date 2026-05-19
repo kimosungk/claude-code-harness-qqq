@@ -7,8 +7,11 @@ set -euo pipefail
 # Launcher-owned/agent-ownership checks were retired with .qqq.lock,
 # .qqq/session.json, and the workflow controller (migration v2.3).
 
-script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-project_root=$(cd "$script_dir/../.." && pwd)
+if git rev-parse --show-toplevel >/dev/null 2>&1; then
+  project_root=$(git rev-parse --show-toplevel)
+else
+  project_root="$PWD"
+fi
 
 payload=$(cat)
 if [[ -z "$payload" ]]; then

@@ -38,23 +38,6 @@ alias qqq="$HOME/.claude/plugins/local/hskim-plugins/plugins/qqq/scripts/qqq"
 alias qqq="/abs/path/to/claude-code-harness-qqq/scripts/qqq"
 ```
 
-### Hooks companion pack (per-project)
-
-The plugin ships hook scripts under `hooks/`, but they are **not** auto-registered into your project. Install them into a target project's `.claude/`:
-
-```bash
-# from the project root you want qqq to guard:
-/qqq:install
-```
-
-This copies the two hooks (`qqq-protect-files.sh`, `qqq-context.sh`) into `<project>/.claude/hooks/` and merges hook entries into `<project>/.claude/settings.json`. Re-run after plugin updates.
-
-To validate an existing install:
-
-```bash
-bash scripts/validate-qqq-hooks.sh <project_root>
-```
-
 ## Dependencies
 
 | Dependency | Required for | Notes |
@@ -108,7 +91,7 @@ State is inferred from `~/.claude/jobs/<short>/state.json` — there is no qqq l
 
 ## What's inside
 
-13 phase agents under `agents/`, 14 skills under `skills/`, 2 hooks under `hooks/`, 4 scripts under `scripts/` (`qqq`, `install-qqq-hooks.sh`, `validate-qqq-hooks.sh`).
+13 phase agents under `agents/`, 14 skills under `skills/`, 2 hooks under `hooks/`, 1 script under `scripts/` (`qqq`).
 
 ### Phase 0 — Register Issue (optional)
 
@@ -139,7 +122,7 @@ State is inferred from `~/.claude/jobs/<short>/state.json` — there is no qqq l
 | Agent / Skill | Purpose |
 |---|---|
 | `qqq:code-implementer` / `qqq:code-implement` | Executes the plan, writes `phase3-implement-log.md`, drives reviewer loop. **D1− gate**: requires `phase2-review-state.json` with `review_loop_completed: true`. |
-| `qqq:code-implement-reviewer` / `qqq:code-implement-review` | Codex-first diff review with Claude fallback |
+| `qqq:code-implement-reviewer` / `qqq:code-implement-review` | Codex-first diff review with Claude fallback. Reviews working-tree scope (tracked + untracked paths). On Codex failure the artifact records a 9-way `Failure category`; only infra-class categories allow Claude fallback, bug-class (`unsupported_config` / `schema` / `unknown`) auto-`REJECT`. |
 
 ### Merge
 
@@ -154,9 +137,8 @@ State is inferred from `~/.claude/jobs/<short>/state.json` — there is no qqq l
 | `qqq:rebase-conflict-resolver` / `qqq:rebase-conflict-resolve` | Resolve in-progress git rebase conflicts (Codex-first, Claude fallback) |
 | `qqq:ui-verifier` | Browser-based UI verification via `playwright-cli`. Optional NLTP scenario contract drives the browser. |
 | `qqq:debug-frontend-pw` | Root-cause investigation in the browser via `playwright-cli` |
-| `qqq:install` | Install hooks companion pack into a project's `.claude/` |
 
-### Hooks (project-local, installed by `qqq:install`)
+### Hooks (plugin-level, auto-registered via `hooks/hooks.json`)
 
 | Hook | Event | Purpose |
 |---|---|---|
@@ -174,6 +156,44 @@ qqq's phase gating is intentionally weak in v3.0. Only the Phase 2 → 3 transit
 3. **Modifying a plan after review bypasses Phase 3 re-review**. No fingerprint enforcement at dispatch time.
 
 The trade-off is documented in `MIGRATION_PLAN.md §9.4`.
+
+## Migration — v3.0 → v3.1
+
+v3.1 ships hooks as a plugin-level resource (`hooks/hooks.json`), so the
+per-project `/qqq:install` step is gone. New users only need
+`claude --plugin-dir <qqq>` and the CLI alias.
+
+**Existing users** (who ran `/qqq:install` in any project) should remove the
+now-redundant per-project copies after pulling v3.1. **Only remove the qqq-*
+entries; preserve any unrelated hook objects in the same arrays.**
+
+```bash
+# Step 1. Back up settings.json first
+cp .claude/settings.json .claude/settings.json.bak
+
+# Step 2. Remove qqq-* hook script copies
+rm -f .claude/hooks/qqq-protect-files.sh .claude/hooks/qqq-context.sh
+```
+
+Step 3. Edit `.claude/settings.json` and remove only the hook command
+objects whose `command` field references `qqq-protect-files` or
+`qqq-context`. Concretely:
+
+- **Remove** the command object inside `.hooks.PreToolUse[*].hooks[]`
+  whose `command` includes `qqq-protect-files.sh`.
+- **Remove** the command object inside `.hooks.SessionStart[*].hooks[]`
+  whose `command` includes `qqq-context.sh`.
+- **Preserve** all other command objects in the same `hooks[]` array.
+- **Optional cleanup** (only if all matched handlers/events become qqq-only):
+  If a handler's `hooks[]` array becomes empty after removal, you may drop
+  that handler object. If an event's array (e.g. `PreToolUse`) becomes empty,
+  you may drop that event key. **Empty arrays are not known to break Claude
+  Code** ([UNVERIFIED]: schema docs do not require array cleanup), so this
+  step is safe to skip; the `.bak` backup is your safety net either way.
+
+Without cleanup, the old per-project hooks and new plugin-level hooks both
+fire — behavior is identical but `PreToolUse` runs twice per Edit/Write/Bash
+(~10-20ms extra).
 
 ## Development
 
@@ -196,9 +216,6 @@ jq empty .claude-plugin/plugin.json
 ## See also
 
 - `MIGRATION_PLAN.md` — v3.0 design (CLI surface, F1=b, D1−, CLI-9, hook reduction)
-- `HANDOFF.md` — running migration progress log
-- `qqq-hooks-companion-pack.md` — hooks contract (v3.0 scope)
-- `UPDATE_GUIDE.md` — single-source-of-truth update procedure
 - [Claude Code plugin docs](https://code.claude.com/docs/en/plugins)
 - [Subagent docs](https://code.claude.com/docs/en/sub-agents) — covers persistent agent memory used by `qqq:ui-verifier`
 - [Skill docs](https://code.claude.com/docs/en/skills) — covers skill frontmatter and `${CLAUDE_SKILL_DIR}` substitution

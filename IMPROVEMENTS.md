@@ -36,7 +36,7 @@ Scope guardrail: qqq stays bash-only and lightweight. Anything that requires a r
 
 ## 5. Documentation
 
-- [x] Hooks companion pack reference doc (`qqq-hooks-companion-pack.md`)
+- [x] Hooks companion pack reference doc (`qqq-hooks-companion-pack.md`) — *removed in v3.1 (plugin-level hooks)*
 - [ ] End-to-end walkthrough video/screencast linked from qqq-orchestrator-guide.md
 - [x] "Recovery cookbook" — covered by Scenario K in qqq-orchestrator-guide.md (v2.0.0)
 - [x] Migration guide from v1.x leader-cwd workflow to v2.x — implicit via `worktree-create` auto-migrate; documented in Scenario H
