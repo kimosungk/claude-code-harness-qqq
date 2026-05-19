@@ -278,6 +278,171 @@ read_active_session_dir() {
   printf '%s' "$session_dir"
 }
 
+# read_active_session_subdir <worktree_root>
+# Returns the caller subdir (line 2 of sentinel) — empty string when the
+# original `qqq new` was invoked from the worktree root, OR when the sentinel
+# is in legacy 1-line format (v3.3 pre-T2 writers). Either way the safe
+# interpretation is "wt root". Returns 1 (no output) only when the sentinel
+# itself is missing.
+read_active_session_subdir() {
+  local wt="$1"
+  [[ -d "$wt" ]] || return 1
+  local sentinel="$wt/.qqq-current-session"
+  [[ -f "$sentinel" ]] || return 1
+  local subdir
+  subdir=$(sed -n '2p' "$sentinel" 2>/dev/null)
+  # Strip trailing whitespace/newline only — preserve internal spaces in path.
+  subdir="${subdir%$'\n'}"
+  printf '%s' "$subdir"
+}
+
+# list_qqq_worktrees [<leader_root>]
+# Emits qqq-managed worktrees as TSV: <wt_path>\t<slug>\t<branch>\t<status>
+# where <status> is one of: active|stale|archived.
+#   active   — wt_path is registered in `git worktree list` AND directory exists
+#              AND sentinel is present.
+#   archived — wt_path is registered AND exists AND no sentinel (merge-mr cleared it)
+#   stale    — wt_path is registered but directory missing, OR vice versa
+# Filters to the qqq namespace only: `<leader>/.claude/worktrees/<slug>`.
+list_qqq_worktrees() {
+  local leader="${1:-$(leader_checkout_root)}"
+  [[ -d "$leader" ]] || return 1
+  local ns="$leader/.claude/worktrees"
+
+  # Collect from git first (source of truth for worktree registration).
+  declare -A git_paths
+  while IFS= read -r line; do
+    [[ "$line" =~ ^worktree[[:space:]](.+)$ ]] || continue
+    local p="${BASH_REMATCH[1]}"
+    case "$p" in
+      "$ns"/*) git_paths["$p"]=1 ;;
+    esac
+  done < <(git -C "$leader" worktree list --porcelain 2>/dev/null)
+
+  # Also scan disk so we surface disk-only stale entries.
+  declare -A disk_paths
+  if [[ -d "$ns" ]]; then
+    local entry
+    for entry in "$ns"/*; do
+      [[ -d "$entry" ]] && disk_paths["$entry"]=1
+    done
+  fi
+
+  # Union
+  declare -A all
+  local p
+  for p in "${!git_paths[@]}"; do all["$p"]=1; done
+  for p in "${!disk_paths[@]}"; do all["$p"]=1; done
+
+  local wt slug branch status
+  for wt in "${!all[@]}"; do
+    slug=$(basename "$wt")
+    branch=$(git -C "$leader" worktree list --porcelain 2>/dev/null \
+      | awk -v p="$wt" '$1=="worktree" && $2==p {found=1} found && $1=="branch" {sub("refs/heads/","",$2); print $2; exit}')
+    [[ -z "$branch" ]] && branch="(detached or missing)"
+
+    if [[ -n "${git_paths[$wt]:-}" && -n "${disk_paths[$wt]:-}" ]]; then
+      if [[ -f "$wt/.qqq-current-session" ]]; then
+        status="active"
+      else
+        status="archived"
+      fi
+    else
+      status="stale"
+    fi
+    printf '%s\t%s\t%s\t%s\n' "$wt" "$slug" "$branch" "$status"
+  done | sort -t$'\t' -k4,4 -k1,1   # active before archived/stale; then alphabetical
+}
+
+# sessions_for_worktree <wt_path>
+# Emits TSV records of background sessions belonging to <wt_path>:
+#   <short_id>\t<state>\t<name>
+# Match priority (codex MAJOR-4 — never depend on .cwd alone):
+#   1. state.json.worktreePath == wt_path                                     (most reliable)
+#   2. state.json.name matches "<slug>:*" where slug == basename(wt_path)     (canonical fallback)
+#   3. state.json.cwd resolves to a path under wt_path (PWD normalized)       (last resort)
+# Returns priority-1 first, then priority-2, then priority-3, with dedup.
+sessions_for_worktree() {
+  local wt="$1"
+  [[ -d "$wt" ]] || return 1
+  local slug
+  slug=$(basename "$wt")
+  local wt_abs
+  wt_abs=$(cd "$wt" && pwd -P) || return 1
+
+  local f short
+  declare -A seen
+  # Pass 1: worktreePath exact match
+  for f in "$QQQ_JOBS_DIR"/*/state.json; do
+    [[ -f "$f" ]] || continue
+    short=$(basename "$(dirname "$f")")
+    local wp
+    wp=$(jq -r '.worktreePath // ""' "$f" 2>/dev/null)
+    if [[ -n "$wp" && "$wp" == "$wt" ]]; then
+      seen["$short"]=1
+      _print_session_record "$f" "$short"
+    fi
+  done
+  # Pass 2: name "<slug>:..."
+  for f in "$QQQ_JOBS_DIR"/*/state.json; do
+    [[ -f "$f" ]] || continue
+    short=$(basename "$(dirname "$f")")
+    [[ -n "${seen[$short]:-}" ]] && continue
+    local name
+    name=$(jq -r '.name // ""' "$f" 2>/dev/null)
+    if [[ "$name" == "$slug":* ]]; then
+      seen["$short"]=1
+      _print_session_record "$f" "$short"
+    fi
+  done
+  # Pass 3: .cwd under wt_abs (normalized)
+  for f in "$QQQ_JOBS_DIR"/*/state.json; do
+    [[ -f "$f" ]] || continue
+    short=$(basename "$(dirname "$f")")
+    [[ -n "${seen[$short]:-}" ]] && continue
+    local cwd cwd_abs
+    cwd=$(jq -r '.cwd // ""' "$f" 2>/dev/null)
+    [[ -n "$cwd" && -d "$cwd" ]] || continue
+    cwd_abs=$(cd "$cwd" && pwd -P 2>/dev/null) || continue
+    if [[ "$cwd_abs" == "$wt_abs" || "$cwd_abs" == "$wt_abs"/* ]]; then
+      seen["$short"]=1
+      _print_session_record "$f" "$short"
+    fi
+  done
+}
+
+_print_session_record() {
+  local f="$1" short="$2"
+  local state name
+  state=$(jq -r '.state // ""' "$f" 2>/dev/null)
+  name=$(jq -r '.name // ""' "$f" 2>/dev/null)
+  printf '%s\t%s\t%s\n' "$short" "$state" "$name"
+}
+
+# worktree_status <wt_path>
+# Emits a single-line status summary:
+#   clean | dirty:<short reason>
+# Used by remove-worktree to decide between single-confirm and dirty-warn paths.
+worktree_status() {
+  local wt="$1"
+  [[ -d "$wt" ]] || { printf 'missing\n'; return; }
+  local porcelain unpushed
+  porcelain=$(git -C "$wt" status --porcelain 2>/dev/null)
+  if [[ -n "$porcelain" ]]; then
+    printf 'dirty:uncommitted\n'
+    return
+  fi
+  # Unpushed commits (only if upstream is configured).
+  if git -C "$wt" rev-parse @{u} >/dev/null 2>&1; then
+    unpushed=$(git -C "$wt" log @{u}..HEAD --oneline 2>/dev/null)
+    if [[ -n "$unpushed" ]]; then
+      printf 'dirty:unpushed\n'
+      return
+    fi
+  fi
+  printf 'clean\n'
+}
+
 today_slug() {
   date +%Y-%m-%d
 }
@@ -1076,26 +1241,34 @@ EOF
 tui_main_menu() {
   is_in_git_repo || die "TUI must run from inside a git repo"
 
-  local opts=()
-  opts+=("📋 new                    Start a new session (blank or from issue)")
-  opts+=("🔍 sessions               Pick a running/stopped session (attach/next-phase/logs/stop/rm)")
-  opts+=("🔀 merge                  Run /qqq:merge-mr in current worktree (push + MR/PR + merge)")
-  opts+=("⚙  aux                    Other skills (rebase-conflict-resolve / ui-verify / debug-frontend)")
-  opts+=("ℹ  verify                 Smoke test (G1..G6)")
-  opts+=("✖  quit")
+  while true; do
+    local opts=()
+    opts+=("📋 new                    Start a new session (blank or from issue)")
+    opts+=("🌲 worktrees              Manage qqq worktrees (sessions / next-phase / remove)")
+    opts+=("🔀 merge                  Run /qqq:merge-mr in current worktree (push + MR/PR + merge)")
+    opts+=("⚙  aux                    Other skills (rebase-conflict-resolve / ui-verify / debug-frontend)")
+    opts+=("ℹ  verify                 Smoke test (G1..G6)")
+    opts+=("✖  quit")
 
-  local picked
-  picked=$(printf '%s\n' "${opts[@]}" | fzf_pick 'qqq > ')
-  [[ -n "$picked" ]] || return 0
+    local picked
+    picked=$(printf '%s\n' "${opts[@]}" | fzf_pick 'qqq > ')
+    # ESC / Ctrl+C / explicit ✖ → leave main menu (= exit qqq)
+    [[ -n "$picked" ]] || return 0
 
-  case "$picked" in
-    📋*) tui_new_flow ;;
-    🔍*) tui_session_flow ;;
-    🔀*) cmd_merge_mr ;;
-    ⚙*)  tui_aux_flow ;;
-    ℹ*)  cmd_verify ;;
-    *)   return 0 ;;
-  esac
+    case "$picked" in
+      📋*) tui_new_flow ;;
+      🌲*) tui_worktree_flow ;;
+      🔀*) cmd_merge_mr ;;
+      ⚙*)  tui_aux_flow ;;
+      ℹ*)  cmd_verify ;;
+      ✖*)  return 0 ;;
+    esac
+    # Any sub-flow return drops back here and re-prompts. The whole TUI is a
+    # stack of while-loops; ESC at level N → pop back to level N-1; ESC at
+    # level 0 (this loop) → quit. Ctrl+C falls through the same path because
+    # fzf returns nothing on either; users wanting an immediate kill press
+    # Ctrl+C a second time or use the ✖ entry.
+  done
 }
 
 tui_new_flow() {
@@ -1136,65 +1309,133 @@ tui_new_flow() {
   esac
 }
 
-tui_session_flow() {
-  local id
-  id=$(pick_job_id 'session > ') || return 0
-  local action
-  action=$(printf '%s\n' \
-    "attach      Open in this terminal" \
-    "next-phase  Run the next phase (clarify/ui/nltp/tech-spec/plan/implement)" \
-    "logs        Tail recent output" \
-    "stop        Stop (keeps conversation)" \
-    "rm          Delete session + worktree" \
-    | fzf_pick "$id > " --delimiter=' ' --accept-nth=1
-  )
-  [[ -n "$action" ]] || return 0
+# tui_worktree_flow — pick a qqq-managed worktree, then enter the action menu.
+#
+# Lists only worktrees under `<leader>/.claude/worktrees/<slug>`. Each row is
+# tagged active / archived / stale per `list_qqq_worktrees`. Selecting a stale
+# entry is allowed because the user may want to clean it up with
+# remove-worktree.
+tui_worktree_flow() {
+  local leader
+  leader=$(leader_checkout_root) || { err "TUI must run inside a git repo"; return 1; }
 
-  case "$action" in
-    attach) primitive_job_action attach "$id" ;;
-    logs)   primitive_job_action logs   "$id" ;;
-    stop)   primitive_job_action stop   "$id" ;;
-    rm)     primitive_job_action rm     "$id" ;;
-    next-phase) tui_next_phase_flow "$id" ;;
-  esac
+  while true; do
+    local rows
+    rows=$(list_qqq_worktrees "$leader")
+    if [[ -z "$rows" ]]; then
+      warn "no qqq worktrees under $leader/.claude/worktrees/ — create one with 'new'"
+      return 0
+    fi
+
+    # Display format: <slug>  [<status>]  branch=<branch>  path=<wt>
+    # Selection format: first field is wt_path so we recover the full path.
+    local picked
+    picked=$(
+      printf '%s\n' "$rows" \
+        | awk -F'\t' '{ printf "%s\t%-30s [%s]  branch=%s\n", $1, $2, $4, $3 }' \
+        | fzf_pick 'worktree > ' --delimiter=$'\t' --with-nth=2 --accept-nth=1
+    )
+    [[ -n "$picked" ]] || return 0
+
+    tui_worktree_action_flow "$picked"
+  done
 }
 
-# next-phase flow: attach to the session's cwd, then dispatch the next phase.
-# We do NOT run inside the existing bg session — F1=b: each phase is a new bg
-# session. We just inherit the cwd from the picked session.
-tui_next_phase_flow() {
-  local id="$1"
-  local state_path="$QQQ_JOBS_DIR/$id/state.json"
-  [[ -f "$state_path" ]] || { err "no state.json for $id"; return 1; }
+# tui_worktree_action_flow <wt_path>
+# Actions for a selected worktree.
+tui_worktree_action_flow() {
+  local wt="$1"
+  local slug
+  slug=$(basename "$wt")
 
-  # Resolve where to dispatch the next phase from. Order:
-  #   1. .worktreePath  — set when Claude Code created the worktree itself
-  #      (most reliable, but observed null when a WorktreeCreate hook took
-  #      over creation, even though it was populated in stage-3 PoC. Treat
-  #      as unreliable.)
-  #   2. <leader>/.claude/worktrees/<slug>  — derive slug from .name
-  #      (`<slug>:<agent>`) and compute the canonical qqq worktree path
-  #      from the session's .cwd via leader-checkout resolution.
-  #   3. .cwd — legacy fallback for sessions not using qqq slugs.
-  local cwd wt_path session_name slug cwd_field
-  wt_path=$(jq -r '.worktreePath // empty' "$state_path")
-  session_name=$(jq -r '.name // empty' "$state_path")
-  cwd_field=$(jq -r '.cwd // empty' "$state_path")
+  while true; do
+    local action
+    action=$(printf '%s\n' \
+      "claude-sessions     Pick a background session in this worktree (attach/logs/stop/remove-session)" \
+      "next-phase          Dispatch the next phase (clarify/ui/nltp/tech-spec/plan/implement)" \
+      "remove-worktree     Stop all sessions, then 'git worktree remove' + 'git branch -D'" \
+      | fzf_pick "$slug > " --delimiter=' ' --accept-nth=1
+    )
+    [[ -n "$action" ]] || return 0
 
-  if [[ -z "$wt_path" ]]; then
-    slug="${session_name%%:*}"
-    if [[ -n "$slug" && "$slug" != "$session_name" && -d "$cwd_field" ]]; then
-      local leader common
-      if common=$(git -C "$cwd_field" rev-parse --path-format=absolute --git-common-dir 2>/dev/null); then
-        leader=$(dirname "$common")
-        wt_path="$leader/.claude/worktrees/$slug"
-        [[ -d "$wt_path" ]] || wt_path=""
-      fi
+    case "$action" in
+      claude-sessions) tui_worktree_sessions_flow "$wt" ;;
+      next-phase)      tui_next_phase_flow "$wt" ;;
+      remove-worktree)
+        if tui_remove_worktree_flow "$wt"; then
+          return 0  # worktree gone, no longer a valid context
+        fi
+        ;;
+    esac
+  done
+}
+
+# tui_worktree_sessions_flow <wt_path>
+# Picker over the sessions that belong to <wt_path> (per sessions_for_worktree).
+tui_worktree_sessions_flow() {
+  local wt="$1"
+  local slug
+  slug=$(basename "$wt")
+
+  while true; do
+    local rows
+    rows=$(sessions_for_worktree "$wt")
+    if [[ -z "$rows" ]]; then
+      warn "no background sessions for worktree $slug"
+      return 0
     fi
+
+    local picked
+    picked=$(
+      printf '%s\n' "$rows" \
+        | awk -F'\t' '{ printf "%s\t%s [%s] %s\n", $1, $1, $2, $3 }' \
+        | fzf_pick "$slug sessions > " --delimiter=$'\t' --with-nth=2 --accept-nth=1
+    )
+    [[ -n "$picked" ]] || return 0
+
+    local action
+    action=$(printf '%s\n' \
+      "attach          Open in this terminal" \
+      "logs            Tail recent output" \
+      "stop            Stop (keeps conversation)" \
+      "remove-session  claude rm — removes session + Claude-managed worktree (qqq worktrees are user-managed and survive)" \
+      | fzf_pick "$picked > " --delimiter=' ' --accept-nth=1
+    )
+    [[ -n "$action" ]] || continue   # ESC at action picker → back to session list
+
+    case "$action" in
+      attach)         primitive_job_action attach "$picked" ;;
+      logs)           primitive_job_action logs   "$picked" ;;
+      stop)           primitive_job_action stop   "$picked" ;;
+      remove-session) primitive_job_action rm     "$picked" ;;
+    esac
+  done
+}
+
+# tui_next_phase_flow <wt_path>
+# Dispatch the next phase in <wt_path>. cwd = wt_path + caller subdir (from
+# sentinel line 2). subdir absence vs empty is treated the same as "wt root"
+# per read_active_session_subdir semantics. If sentinel line 2 names a subdir
+# that no longer exists on disk we ABORT (codex MAJOR-2 — never silently
+# fall back to root because that hides monorepo context loss).
+tui_next_phase_flow() {
+  local wt="$1"
+  [[ -d "$wt" ]] || { err "worktree path does not exist: $wt"; return 1; }
+
+  local subdir
+  if subdir=$(read_active_session_subdir "$wt"); then
+    if [[ -n "$subdir" && ! -d "$wt/$subdir" ]]; then
+      err "sentinel names subdir '$subdir' but $wt/$subdir does not exist"
+      err "→ refusing to fall back to worktree root; investigate before retrying"
+      return 1
+    fi
+  else
+    # sentinel missing — archived or never qqq-mode. allow root.
+    subdir=""
   fi
 
-  cwd="${wt_path:-$cwd_field}"
-  [[ -d "$cwd" ]] || { err "session cwd no longer exists: $cwd"; return 1; }
+  local target_cwd="$wt"
+  [[ -n "$subdir" ]] && target_cwd="$wt/$subdir"
 
   local phase
   phase=$(printf '%s\n' \
@@ -1208,9 +1449,7 @@ tui_next_phase_flow() {
   )
   [[ -n "$phase" ]] || return 0
 
-  # Re-enter the worktree, then call the phase command. CLI-9 race check
-  # runs inside each cmd_*.
-  ( cd "$cwd" && case "$phase" in
+  ( cd "$target_cwd" && case "$phase" in
       clarify)   cmd_clarify ;;
       ui)        cmd_ui ;;
       nltp)      cmd_nltp ;;
@@ -1219,6 +1458,152 @@ tui_next_phase_flow() {
       implement) cmd_implement ;;
     esac
   )
+}
+
+# tui_remove_worktree_flow <wt_path>
+# Removes the worktree + its branch + cleans up all background sessions
+# belonging to it. Returns 0 on success, non-zero on cancel/refuse.
+#
+# Safety (mirrors _verify_teardown's 4-layer guard):
+#   1. wt_path literal must be under */.claude/worktrees/* (namespace check)
+#   2. realpath(wt_path) must also stay under */.claude/worktrees/* (symlink escape)
+#   3. wt_path must not equal $PWD or be an ancestor of $PWD (would rug-pull the caller)
+#   4. wt_path must not equal the leader checkout root itself
+#
+# Then:
+#   - clean (no uncommitted, no untracked, no unpushed): single confirm
+#   - dirty: print status, separate confirm with "type slug to confirm" gate
+#   - stop+rm all sessions, then re-scan for racing sessions (codex MAJOR-5)
+#   - git worktree remove [--force] + git branch -D <slug>
+tui_remove_worktree_flow() {
+  local wt="$1"
+  local slug
+  slug=$(basename "$wt")
+
+  # ---- Guard 1: namespace prefix ----
+  case "$wt" in
+    */.claude/worktrees/*) ;;
+    *) err "refused: $wt is outside the .claude/worktrees/ namespace"; return 1 ;;
+  esac
+
+  # ---- Guard 2: realpath also in namespace ----
+  local wt_abs
+  if [[ -d "$wt" ]]; then
+    wt_abs=$(cd "$wt" 2>/dev/null && pwd -P) || { err "could not resolve $wt"; return 1; }
+    case "$wt_abs" in
+      */.claude/worktrees/*) ;;
+      *) err "refused: $wt resolves to $wt_abs (escapes worktree namespace)"; return 1 ;;
+    esac
+  else
+    # stale dir — skip realpath check, but require git registration
+    wt_abs="$wt"
+  fi
+
+  # ---- Guard 3: not equal to or ancestor of PWD ----
+  local pwd_abs="${PWD}"
+  if [[ -n "$pwd_abs" && ( "$wt_abs" == "$pwd_abs" || "$pwd_abs" == "$wt_abs"/* ) ]]; then
+    err "refused: cannot remove the worktree you're currently in ($wt_abs)"
+    err "→ cd outside it first (e.g. cd ~) and retry"
+    return 1
+  fi
+
+  # ---- Guard 4: not the leader checkout itself ----
+  local leader
+  leader=$(leader_checkout_root) || true
+  if [[ -n "$leader" && "$wt_abs" == "$leader" ]]; then
+    err "refused: $wt_abs is the leader checkout root, not a worktree"
+    return 1
+  fi
+
+  # ---- Status check ----
+  local status
+  status=$(worktree_status "$wt")
+
+  # ---- Print summary ----
+  printf '\n=== remove-worktree: %s ===\n' "$slug" >&2
+  printf '  path:   %s\n' "$wt_abs" >&2
+  printf '  status: %s\n' "$status" >&2
+  if [[ "$status" == dirty:* ]]; then
+    printf '  --- uncommitted/unpushed details ---\n' >&2
+    if [[ -d "$wt" ]]; then
+      git -C "$wt" status --short 2>&1 | sed 's/^/    /' >&2
+      git -C "$wt" log @{u}..HEAD --oneline 2>/dev/null | sed 's/^/    unpushed: /' >&2
+    fi
+  fi
+
+  # ---- Sessions to be terminated ----
+  local sessions
+  sessions=$(sessions_for_worktree "$wt" 2>/dev/null)
+  if [[ -n "$sessions" ]]; then
+    printf '  --- background sessions to stop+rm ---\n' >&2
+    printf '%s\n' "$sessions" | awk -F'\t' '{ printf "    %s [%s] %s\n", $1, $2, $3 }' >&2
+  fi
+
+  # ---- Confirm ----
+  printf '\n' >&2
+  if [[ "$status" == dirty:* ]]; then
+    printf 'DIRTY worktree — uncommitted/unpushed work will be PERMANENTLY LOST.\n' >&2
+    printf 'Type the slug "%s" to confirm force-remove: ' "$slug" >&2
+    local typed
+    read -r typed
+    if [[ "$typed" != "$slug" ]]; then
+      note "remove cancelled (typed input did not match slug)"
+      return 1
+    fi
+  else
+    printf 'Remove worktree "%s" (clean)? [y/N]: ' "$slug" >&2
+    local yn
+    read -r yn
+    case "$yn" in
+      y|Y|yes|YES) ;;
+      *) note "remove cancelled"; return 1 ;;
+    esac
+  fi
+
+  # ---- Stop + rm sessions ----
+  if [[ -n "$sessions" ]]; then
+    local short
+    while IFS=$'\t' read -r short _ _; do
+      [[ -z "$short" ]] && continue
+      note "  stop $short"
+      claude stop "$short" >/dev/null 2>&1 || true
+      note "  rm   $short"
+      claude rm "$short" >/dev/null 2>&1 || true
+    done <<<"$sessions"
+
+    # codex MAJOR-5 — re-scan for race
+    local late
+    late=$(sessions_for_worktree "$wt" 2>/dev/null)
+    if [[ -n "$late" ]]; then
+      err "race detected: new session(s) appeared in $slug during cleanup:"
+      printf '%s\n' "$late" | sed 's/^/  /' >&2
+      err "→ aborting remove-worktree. retry after those settle."
+      return 1
+    fi
+  fi
+
+  # ---- git worktree remove ----
+  local force_flag=""
+  [[ "$status" == dirty:* ]] && force_flag="--force"
+  if [[ -d "$wt" ]]; then
+    if ! git -C "$leader" worktree remove $force_flag "$wt" 2>&1 >&2; then
+      err "git worktree remove failed for $wt"
+      return 1
+    fi
+  else
+    # stale dir — try prune instead
+    git -C "$leader" worktree prune 2>&1 >&2 || true
+  fi
+
+  # ---- branch -D ----
+  if git -C "$leader" show-ref --verify --quiet "refs/heads/$slug"; then
+    if ! git -C "$leader" branch -D "$slug" 2>&1 >&2; then
+      warn "git branch -D $slug failed — branch may still exist"
+    fi
+  fi
+
+  note "removed worktree '$slug' + branch '$slug'"
+  return 0
 }
 
 tui_aux_flow() {

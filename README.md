@@ -20,6 +20,8 @@ issue 등록    요구 명세    코드 계획    구현 + 리뷰
 > **v3.1 변경.** Hook이 **플러그인 레벨 리소스(`hooks/hooks.json`)**로 이동했다. 옛 `/qqq:install` per-project 단계가 사라지고, `claude --plugin-dir <qqq>` 한 번이면 hook까지 자동 등록된다. 기존 사용자 정리 절차는 아래 [Migration — v3.0 → v3.1](#migration--v30--v31) 항목을 참고할 것.
 >
 > **v3.3 변경 (worktree 모델 전환).** `qqq new`가 워크트리를 직접 만들지 않고 `claude --bg --worktree <slug>`를 통해 Claude Code 표준 워크트리 메커니즘에 위임한다. 새 `WorktreeCreate` hook(`hooks/qqq-worktree-create.sh`)이 워크트리 경로(`<repo>/.claude/worktrees/<slug>`)·브랜치명·`phase0-issue.md` commit·active-session sentinel을 동시에 처리한다. mtime 기반 `infer_session_dir`은 sentinel 기반 `read_active_session_dir`로 교체됐고 `claude-works-completed/` 오선택 버그가 해소된다. **신규 설치 후 `qqq install`을 한 번 실행해야 한다** — Claude Code v2.1.144에서 `WorktreeCreate`는 플러그인 레벨 `hooks/hooks.json`에서 호출되지 않아 user scope(`~/.claude/settings.json`)에 등록이 필요하다.
+>
+> **v3.4 변경 (TUI 재설계).** `🔍 sessions` 메뉴가 `🌲 worktrees`로 바뀌었다. 최상위 메뉴 → worktree picker(qqq 관리만, status=active/archived/stale 표기) → 액션 메뉴(`claude-sessions` / `next-phase` / `remove-worktree`)의 3-스택 구조다. ESC는 한 단계씩 위로 pop하며 최상위에서만 종료된다. `next-phase`는 sentinel 2번째 줄에 박힌 caller subdir(예: `frontend`)을 그대로 cwd로 재현해 모노레포 컨텍스트가 phase 간에 보존된다 — sentinel 형식이 1줄(legacy)에서 2줄로 확장됐지만 `read_active_session_subdir`이 backward-compatible하다. `remove-worktree`는 `_verify_teardown`의 4-layer 가드를 차용하고 dirty 시 slug 재입력 confirm을 요구한다.
 
 ---
 
