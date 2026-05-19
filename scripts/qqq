@@ -110,21 +110,13 @@ current_branch() {
   git rev-parse --abbrev-ref HEAD 2>/dev/null
 }
 
-# Repo slug = leader repo dirname. Used as a worktree namespace key.
-#
-# `git rev-parse --git-common-dir` may return a relative path (`.git`) when
-# cwd is the leader checkout itself, or an absolute path (`/abs/.../.git`)
-# when cwd is a linked worktree. Both must collapse to the same leader-repo
-# basename. The earlier version only handled the absolute case and returned
-# "." in the relative case — silently corrupting paths derived from this slug.
-repo_slug() {
-  local common toplevel
-  common=$(git rev-parse --git-common-dir 2>/dev/null) || return 1
-  if [[ "$common" != /* ]]; then
-    common=$(cd "$common" 2>/dev/null && pwd) || return 1
-  fi
-  toplevel=$(dirname "$common")
-  basename "$toplevel"
+# Absolute path of the leader checkout (main repo root). Always returns an
+# absolute path regardless of whether cwd is the leader checkout, a linked
+# worktree, or a subdirectory of either.
+leader_checkout_root() {
+  local common
+  common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1
+  dirname "$common"
 }
 
 # ---------------------------------------------------------------------------
@@ -263,42 +255,31 @@ ensure_in_worktree_for_phase() {
 # Session-directory resolution
 # ---------------------------------------------------------------------------
 
-# Most-recently-modified <worktree>/<...>/claude-works/<date_slug>/
-infer_session_dir() {
+# read_active_session_dir <worktree_root>
+# Returns the absolute path of the current session dir from the sentinel
+# `<worktree_root>/.qqq-current-session`, written by qqq-worktree-create.sh
+# when `claude --worktree <slug>` runs in qqq mode (staging file present).
+#
+# Replaces the v3.x mtime-based infer_session_dir, which had two failures:
+#   1. picked archived sessions under claude-works-completed/ when their
+#      mtime happened to be the most recent (incident: tech-interviewer
+#      dispatched into a merged session's directory);
+#   2. ambiguous when claude-works/ contained more than one date_slug dir.
+# Sentinel is unambiguous, lifecycle-bound, and archive-safe — merge-mr
+# clears it when moving claude-works/ → claude-works-completed/.
+read_active_session_dir() {
   local wt="$1"
   [[ -d "$wt" ]] || return 1
-  find "$wt" -type d \
-    \( -path "*/$QQQ_WORKS_SUBDIR/*" -o -path "*/claude-works-completed/*" \) \
-    -mindepth 2 -maxdepth 6 2>/dev/null \
-    | awk -F/ 'NF>=2' \
-    | while read -r d; do
-        # Filter so we only return leaf session dirs (parent ends with claude-works or claude-works-completed)
-        local parent
-        parent=$(dirname "$d")
-        case "$(basename "$parent")" in
-          "$QQQ_WORKS_SUBDIR"|"claude-works-completed") printf '%s\n' "$d" ;;
-        esac
-      done \
-    | xargs -I{} stat -c '%Y	{}' {} 2>/dev/null \
-    | sort -rn \
-    | head -n1 \
-    | cut -f2-
+  local sentinel="$wt/.qqq-current-session"
+  [[ -f "$sentinel" ]] || return 1
+  local session_dir
+  session_dir=$(head -n1 "$sentinel" 2>/dev/null | tr -d '[:space:]')
+  [[ -n "$session_dir" && -d "$session_dir" ]] || return 1
+  printf '%s' "$session_dir"
 }
 
 today_slug() {
   date +%Y-%m-%d
-}
-
-# Build a fresh session dir name: <date>_<slug>.  If it collides, append -2, -3…
-new_session_dirname() {
-  local wt="$1" slug="$2" base="$(today_slug)_$slug" candidate i
-  candidate="$wt/$QQQ_WORKS_SUBDIR/$base"
-  i=2
-  while [[ -d "$candidate" ]]; do
-    candidate="$wt/$QQQ_WORKS_SUBDIR/$base-$i"
-    i=$((i + 1))
-  done
-  printf '%s' "$candidate"
 }
 
 # ---------------------------------------------------------------------------
@@ -367,9 +348,9 @@ primitive_dispatch_phase() {
   local wt slug session_dir name initial_prompt
   wt=$(current_worktree_root) || die "not in a worktree"
   slug=$(basename "$wt")
-  session_dir=$(infer_session_dir "$wt") || true
+  session_dir=$(read_active_session_dir "$wt") || true
   if [[ -z "$session_dir" || ! -d "$session_dir" ]]; then
-    err "no claude-works/<date_slug>/ session dir found in $wt"
+    err "no active session sentinel at $wt/.qqq-current-session"
     err "→ run 'qqq new <slug>' first to create one"
     exit 1
   fi
@@ -392,9 +373,9 @@ primitive_dispatch_slash() {
   local wt slug session_dir name
   wt=$(current_worktree_root) || die "not in a worktree"
   slug=$(basename "$wt")
-  session_dir=$(infer_session_dir "$wt") || true
+  session_dir=$(read_active_session_dir "$wt") || true
   if [[ -z "$session_dir" || ! -d "$session_dir" ]]; then
-    err "no claude-works/<date_slug>/ session dir found in $wt"
+    err "no active session sentinel at $wt/.qqq-current-session"
     err "→ run 'qqq new <slug>' first to create one"
     exit 1
   fi
@@ -403,69 +384,83 @@ primitive_dispatch_slash() {
   claude --bg --name "$name" "/qqq:$slash $session_dir"
 }
 
-# primitive_new <slug> [<issue_n>]
-# Manually creates the worktree + session dir, writes phase0-issue.md *inside*
-# the worktree (MIGRATION_PLAN §4.1), then dispatches the phase-1 bg session
-# from within the worktree. Manual worktree management is deliberate: we trade
-# `claude rm`'s auto-worktree-cleanup for control over file layout. The user
-# cleans up via `git worktree remove <path>` after merge.
+# primitive_new <slug> [<issue_n>] [<brief>]
+# Writes a staging file consumed by hooks/qqq-worktree-create.sh, then
+# dispatches `claude --bg --worktree <slug>` which triggers that hook to
+# create the worktree, render phase0-issue.md, write the sentinel, and
+# (if invoked from a subdir) preserve the subdir in the session cwd.
+#
+# The hook needs to be registered at user scope — run `qqq install` once.
+# Claude Code v2.1.144 does NOT route WorktreeCreate to plugin-level
+# hooks/hooks.json; the install command writes the entry to
+# ~/.claude/settings.json instead.
 primitive_new() {
   local slug="$1" issue_n="${2:-}" brief="${3:-}"
   is_in_git_repo || die "must run from inside a git repo"
 
-  # Slug sanity: lowercase + safe charset.
   [[ "$slug" =~ ^[a-z0-9][a-z0-9_-]*$ ]] \
     || die "slug must match [a-z0-9_-] and start with [a-z0-9]: $slug"
 
-  local repo wt_path session_dir branch
-  repo=$(repo_slug) || die "could not determine repo slug"
-  wt_path="$HOME/.claude/worktrees/$repo/$slug"
-  branch="$slug"
+  if ! is_qqq_installed; then
+    err "qqq WorktreeCreate hook is not registered at user scope"
+    err "→ run 'qqq install' once, then retry"
+    exit 1
+  fi
+
+  local leader_root wt_path
+  leader_root=$(leader_checkout_root) || die "could not resolve leader checkout root"
+  wt_path="$leader_root/.claude/worktrees/$slug"
 
   [[ ! -e "$wt_path" ]] \
     || die "worktree path already exists: $wt_path (remove via 'git worktree remove' first)"
-
-  # Refuse if branch already exists locally — manual cleanup required.
-  if git show-ref --verify --quiet "refs/heads/$branch"; then
-    die "branch '$branch' already exists — remove via 'git branch -D $branch' or pick another slug"
+  if git -C "$leader_root" show-ref --verify --quiet "refs/heads/$slug"; then
+    die "branch '$slug' already exists in $leader_root — remove via 'git branch -D $slug' or pick another slug"
   fi
 
-  note "creating worktree: $wt_path (branch $branch)"
-  git worktree add -b "$branch" "$wt_path" >&2 || die "git worktree add failed"
+  # Write staging file consumed by qqq-worktree-create.sh. The hook deletes
+  # this file after consuming it (idempotent re-run guard).
+  local staging_dir="$HOME/.claude/qqq-staging"
+  mkdir -p "$staging_dir"
+  local staging_file="$staging_dir/$slug.json"
+  jq -n \
+    --arg slug "$slug" \
+    --arg issue "$issue_n" \
+    --arg brief "$brief" \
+    --arg repo "$leader_root" \
+    '{slug:$slug}
+     + (if $issue == "" then {} else {issue:($issue|tonumber? // $issue)} end)
+     + (if $brief == "" then {} else {brief:$brief} end)
+     + {repo_root:$repo}' > "$staging_file" \
+    || die "failed to write staging file: $staging_file"
 
-  session_dir="$wt_path/$QQQ_WORKS_SUBDIR/$(today_slug)_$slug"
-  mkdir -p "$session_dir"
+  # Predicted session_dir (must match the hook's computation).
+  local session_dir="$wt_path/$QQQ_WORKS_SUBDIR/$(today_slug)_$slug"
 
-  local phase0_path=""
-  if [[ -n "$issue_n" ]]; then
-    note "  fetching GitLab issue #$issue_n"
-    phase0_path="$session_dir/phase0-issue.md"
-    render_phase0_issue "$issue_n" "$phase0_path"
-    # Commit the phase0 artifact inside the worktree so it's preserved
-    # through merge regardless of when the user next commits.
-    ( cd "$wt_path" \
-      && git add "$QQQ_WORKS_SUBDIR/$(today_slug)_$slug/phase0-issue.md" \
-      && git commit -m "phase0: $slug (issue #$issue_n)" ) >&2 \
-      || warn "phase0 auto-commit failed — file written but not committed"
-  fi
-
-  # Dispatch the phase-1 session *from inside the worktree*. F1=b: new bg session.
-  # Brief and phase0 issue (when present) are folded into the agent's first user
-  # turn via build_initial_prompt; --append-system-prompt-file is no longer used.
-  # When neither brief nor issue is supplied, dispatch with no positional prompt
-  # at all — the agent enters its first turn empty and resolves session_dir from
-  # cwd (worktree root) via the clarify skill's standalone fallback.
+  # Build first-turn prompt. brief/issue are inlined so the agent has the
+  # context up-front; the hook also commits phase0-issue.md to the worktree
+  # for later re-read. We pre-render the issue locally to a tmp file because
+  # the worktree doesn't exist yet at this point.
   local agent="req-clarifier" name="${slug}:req-clarifier"
-  local args=(--bg --agent "qqq:$agent" --name "$name" --permission-mode bypassPermissions)
+  local args=(--bg --worktree "$slug" --agent "qqq:$agent" --name "$name" --permission-mode bypassPermissions)
 
-  if [[ -n "$brief" || -n "$phase0_path" ]]; then
+  if [[ -n "$brief" || -n "$issue_n" ]]; then
+    local inline_phase0=""
+    if [[ -n "$issue_n" ]] && command -v glab >/dev/null 2>&1; then
+      inline_phase0=$(mktemp -t qqq-phase0-XXXXXX.md)
+      render_phase0_issue "$issue_n" "$inline_phase0" 2>/dev/null \
+        || { rm -f "$inline_phase0"; inline_phase0=""; }
+    fi
     local initial_prompt
-    initial_prompt=$(build_initial_prompt "$session_dir" "$brief" "$phase0_path")
+    initial_prompt=$(build_initial_prompt "$session_dir" "$brief" "$inline_phase0")
+    [[ -n "$inline_phase0" ]] && rm -f "$inline_phase0"
     args+=("$initial_prompt")
   fi
 
-  note "dispatching: claude --bg --agent 'qqq:$agent' --name '$name'"
-  ( cd "$wt_path" && claude "${args[@]}" )
+  note "dispatching: claude --bg --worktree '$slug' --agent 'qqq:$agent' --name '$name'"
+  # Do NOT cd. The hook reads the caller's cwd via stdin.cwd and preserves
+  # the relative subdir under the new worktree (e.g. monorepo/frontend lands
+  # at <wt>/frontend).
+  claude "${args[@]}"
 }
 
 # primitive_job_action <op> [<id>]
@@ -506,6 +501,97 @@ cmd_new() {
   primitive_new "$slug" "$issue_n" "$brief"
 }
 
+# ---------------------------------------------------------------------------
+# qqq install / uninstall — register WorktreeCreate hook at user scope.
+#
+# Claude Code v2.1.144 does NOT route WorktreeCreate to plugin-level
+# hooks/hooks.json (verified empirically; docs do not document the gap).
+# All other qqq hooks (PreToolUse + SessionStart) stay at plugin scope.
+# ---------------------------------------------------------------------------
+
+# qqq_plugin_root → absolute path of the installed plugin root (follows
+# symlinks so a dev checkout linked into ~/.claude/plugins/ resolves to the
+# real working directory).
+qqq_plugin_root() {
+  local self="${BASH_SOURCE[0]:-$0}"
+  local resolved
+  if resolved=$(readlink -f "$self" 2>/dev/null) && [[ -n "$resolved" ]]; then
+    dirname "$(dirname "$resolved")"
+  else
+    dirname "$(dirname "$self")"
+  fi
+}
+
+qqq_worktree_create_cmd() {
+  printf 'bash %s/hooks/qqq-worktree-create.sh' "$(qqq_plugin_root)"
+}
+
+is_qqq_installed() {
+  local cmd
+  cmd=$(qqq_worktree_create_cmd)
+  local settings="$HOME/.claude/settings.json"
+  [[ -f "$settings" ]] || return 1
+  jq -e --arg cmd "$cmd" '
+    (.hooks.WorktreeCreate // [])[]? | .hooks[]? | select(.command == $cmd)
+  ' "$settings" >/dev/null 2>&1
+}
+
+cmd_install() {
+  local cmd settings tmp
+  cmd=$(qqq_worktree_create_cmd)
+  settings="$HOME/.claude/settings.json"
+
+  if [[ ! -f "$settings" ]]; then
+    note "creating $settings"
+    printf '{}\n' > "$settings" || die "could not create $settings"
+  fi
+
+  tmp=$(mktemp -t qqq-settings-XXXXXX.json)
+  jq --arg cmd "$cmd" '
+    .hooks //= {} |
+    .hooks.WorktreeCreate = (
+      ((.hooks.WorktreeCreate // []) | map(
+        .hooks |= map(select(.command != $cmd))
+      ) | map(select((.hooks | length) > 0)))
+      + [{"hooks":[{"type":"command","command":$cmd}]}]
+    )
+  ' "$settings" > "$tmp" || { rm -f "$tmp"; die "jq update failed"; }
+  mv "$tmp" "$settings"
+
+  note "installed WorktreeCreate hook in $settings"
+  note "  command: $cmd"
+  if ! is_qqq_installed; then
+    die "post-write verification failed — check $settings manually"
+  fi
+}
+
+cmd_uninstall() {
+  local cmd settings tmp
+  cmd=$(qqq_worktree_create_cmd)
+  settings="$HOME/.claude/settings.json"
+
+  if [[ ! -f "$settings" ]]; then
+    note "$settings does not exist — nothing to uninstall"
+    return 0
+  fi
+
+  tmp=$(mktemp -t qqq-settings-XXXXXX.json)
+  jq --arg cmd "$cmd" '
+    if .hooks.WorktreeCreate then
+      .hooks.WorktreeCreate = (
+        (.hooks.WorktreeCreate | map(
+          .hooks |= map(select(.command != $cmd))
+        )) | map(select((.hooks | length) > 0))
+      )
+      | if (.hooks.WorktreeCreate | length) == 0 then del(.hooks.WorktreeCreate) else . end
+      | if (.hooks | length) == 0 then del(.hooks) else . end
+    else . end
+  ' "$settings" > "$tmp" || { rm -f "$tmp"; die "jq update failed"; }
+  mv "$tmp" "$settings"
+
+  note "uninstalled qqq WorktreeCreate hook from $settings"
+}
+
 # Each phase command is a thin wrapper around primitive_dispatch_phase.
 # Arg = agent name (plugin-scoped as qqq:<agent> inside the primitive).
 cmd_clarify()   { ensure_in_worktree_for_phase; ensure_dispatch_ok; primitive_dispatch_phase req-clarifier; }
@@ -533,10 +619,20 @@ cmd_merge_mr() {
   local wt slug session_dir
   wt=$(current_worktree_root)
   slug=$(basename "$wt")
-  session_dir=$(infer_session_dir "$wt") || true
+  session_dir=$(read_active_session_dir "$wt") || true
   if [[ -z "$session_dir" || ! -d "$session_dir" ]]; then
-    err "no claude-works session dir found at $wt — nothing to merge"
-    exit 1
+    # The merge-mr skill clears the sentinel after archiving. On idempotent
+    # re-invoke (e.g. user ran `qqq merge-mr` once with --no-merge then again
+    # to actually merge), fall back to the most-recent dir under
+    # claude-works-completed/. The skill's step 2 handles the already-archived case.
+    session_dir=$(find "$wt/claude-works-completed" -mindepth 1 -maxdepth 2 -type d 2>/dev/null \
+      | xargs -I{} stat -c '%Y	{}' {} 2>/dev/null \
+      | sort -rn | head -n1 | cut -f2-)
+    if [[ -z "$session_dir" || ! -d "$session_dir" ]]; then
+      err "no active session sentinel and no archived session — nothing to merge"
+      exit 1
+    fi
+    note "sentinel absent — falling back to archived session: $session_dir"
   fi
   note "dispatching: claude --bg --name '$slug:merge' '/qqq:merge-mr $session_dir'"
   claude --bg --name "${slug}:merge" "/qqq:merge-mr $session_dir"
@@ -550,6 +646,7 @@ cmd_merge_mr() {
 #   G5  claude --version >= required                          (cheap)
 #   G6  fzf / jq / glab / sha256                              (cheap)
 #   G7  codex availability (informational; absence ≠ failure) (cheap)
+#   G8  WorktreeCreate hook registered at user scope          (cheap)
 #   G1  v3.2 dispatch CLI options: --bg + --worktree + --name +
 #       --permission-mode bypassPermissions + positional prompt
 #       (the --append-system-prompt-file slot of v3.1 was replaced by the
@@ -926,6 +1023,18 @@ EOF
     verify_log G7 "INFO — codex absent; all Codex-first reviewers will use Claude fallback"
   fi
 
+  # G8 — WorktreeCreate hook registered at user scope. Plugin-level hooks.json
+  # does NOT receive WorktreeCreate events in Claude Code v2.1.144 (verified
+  # empirically in stage 3 PoC of the v3.3 migration), so qqq requires a
+  # one-time `qqq install` to write the hook into ~/.claude/settings.json.
+  # Without this, `qqq new <slug>` aborts with a clear error before dispatch.
+  if is_qqq_installed; then
+    verify_log G8 "PASS — WorktreeCreate hook registered at user scope"
+  else
+    verify_log G8 "FAIL — WorktreeCreate hook not registered; run 'qqq install'"
+    fails+=("G8 — qqq install not run")
+  fi
+
   if (( skip_live == 0 )); then
     is_in_git_repo || die "verify (live) must run inside a git repo"
     if ! _verify_g1_g2; then
@@ -1057,8 +1166,34 @@ tui_next_phase_flow() {
   local id="$1"
   local state_path="$QQQ_JOBS_DIR/$id/state.json"
   [[ -f "$state_path" ]] || { err "no state.json for $id"; return 1; }
-  local cwd
-  cwd=$(jq -r '.cwd // ""' "$state_path")
+
+  # Resolve where to dispatch the next phase from. Order:
+  #   1. .worktreePath  — set when Claude Code created the worktree itself
+  #      (most reliable, but observed null when a WorktreeCreate hook took
+  #      over creation, even though it was populated in stage-3 PoC. Treat
+  #      as unreliable.)
+  #   2. <leader>/.claude/worktrees/<slug>  — derive slug from .name
+  #      (`<slug>:<agent>`) and compute the canonical qqq worktree path
+  #      from the session's .cwd via leader-checkout resolution.
+  #   3. .cwd — legacy fallback for sessions not using qqq slugs.
+  local cwd wt_path session_name slug cwd_field
+  wt_path=$(jq -r '.worktreePath // empty' "$state_path")
+  session_name=$(jq -r '.name // empty' "$state_path")
+  cwd_field=$(jq -r '.cwd // empty' "$state_path")
+
+  if [[ -z "$wt_path" ]]; then
+    slug="${session_name%%:*}"
+    if [[ -n "$slug" && "$slug" != "$session_name" && -d "$cwd_field" ]]; then
+      local leader common
+      if common=$(git -C "$cwd_field" rev-parse --path-format=absolute --git-common-dir 2>/dev/null); then
+        leader=$(dirname "$common")
+        wt_path="$leader/.claude/worktrees/$slug"
+        [[ -d "$wt_path" ]] || wt_path=""
+      fi
+    fi
+  fi
+
+  cwd="${wt_path:-$cwd_field}"
   [[ -d "$cwd" ]] || { err "session cwd no longer exists: $cwd"; return 1; }
 
   local phase
@@ -1109,6 +1244,8 @@ usage() {
 usage: qqq [command] [args]
 
   (no command)         TUI entry (fzf menu)
+  install              Register the WorktreeCreate hook in ~/.claude/settings.json
+  uninstall            Remove the WorktreeCreate hook registration
   new <slug>           Start a blank session (no issue)
   new <slug> --issue N GitLab issue + Phase 0/1
   new <slug> -m TEXT   Inject a requirement brief into the first agent turn
@@ -1155,6 +1292,8 @@ main() {
 
   local cmd="$1"; shift
   case "$cmd" in
+    install)    cmd_install ;;
+    uninstall)  cmd_uninstall ;;
     new)        cmd_new "$@" ;;
     clarify)    cmd_clarify ;;
     ui)         cmd_ui ;;

@@ -18,6 +18,8 @@ issue 등록    요구 명세    코드 계획    구현 + 리뷰
 > **v3.0 마이그레이션 메모.** v3.0에서 하니스를 Claude Code v2.1.139+ 표준 인프라(`claude --bg / --worktree`, agent view, `~/.claude/jobs/`)로 옮겼다. 옛 fzf+tmux 런처(`scripts/qqq-workflow.sh`)와 `scripts/lib/`의 대부분이 단일 ~950줄 `scripts/qqq` CLI + 2개 hook으로 대체됐다. 설계 배경은 `MIGRATION_PLAN.md` 참고.
 >
 > **v3.1 변경.** Hook이 **플러그인 레벨 리소스(`hooks/hooks.json`)**로 이동했다. 옛 `/qqq:install` per-project 단계가 사라지고, `claude --plugin-dir <qqq>` 한 번이면 hook까지 자동 등록된다. 기존 사용자 정리 절차는 아래 [Migration — v3.0 → v3.1](#migration--v30--v31) 항목을 참고할 것.
+>
+> **v3.3 변경 (worktree 모델 전환).** `qqq new`가 워크트리를 직접 만들지 않고 `claude --bg --worktree <slug>`를 통해 Claude Code 표준 워크트리 메커니즘에 위임한다. 새 `WorktreeCreate` hook(`hooks/qqq-worktree-create.sh`)이 워크트리 경로(`<repo>/.claude/worktrees/<slug>`)·브랜치명·`phase0-issue.md` commit·active-session sentinel을 동시에 처리한다. mtime 기반 `infer_session_dir`은 sentinel 기반 `read_active_session_dir`로 교체됐고 `claude-works-completed/` 오선택 버그가 해소된다. **신규 설치 후 `qqq install`을 한 번 실행해야 한다** — Claude Code v2.1.144에서 `WorktreeCreate`는 플러그인 레벨 `hooks/hooks.json`에서 호출되지 않아 user scope(`~/.claude/settings.json`)에 등록이 필요하다.
 
 ---
 
@@ -68,7 +70,16 @@ qqq는 **로컬 marketplace** (`hskim-plugins`) 안의 플러그인으로 배포
 /plugin install qqq@hskim-plugins
 ```
 
-이후 어느 디렉터리에서 `claude`를 열어도 `qqq:*` skill + 두 hook이 자동 활성화된다. `--plugin-dir`를 매번 지정할 필요 없음.
+이후 어느 디렉터리에서 `claude`를 열어도 `qqq:*` skill + 두 plugin-level hook(PreToolUse, SessionStart)이 자동 활성화된다. `--plugin-dir`를 매번 지정할 필요 없음.
+
+마지막으로, **v3.3 부터는 `qqq install`을 한 번 실행**해야 `WorktreeCreate` hook이 user scope에 등록된다(plugin scope으로는 호출 안 됨):
+
+```bash
+qqq install
+qqq verify     # G8 항목이 PASS인지 확인
+```
+
+처음 워크트리 모드로 `claude`를 띄우는 디렉터리에서는 Claude Code의 workspace trust dialog를 한 번 수락해야 한다(`claude` 한 번 실행). docs/en/worktrees 참고.
 
 **Scope** — Claude Code의 install 기본은 `user`(모든 프로젝트에서 자동 활성). 본 repo 작성자 환경은 history상 `scope=project`로 4개 프로젝트에 따로 설치되어 있는데(`~/.claude/plugins/installed_plugins.json` 참고), 이는 명시적 옵션 선택의 결과다. project scope을 원하면 `/plugin` UI에서 scope를 고르거나 다음 CLI를 사용한다:
 

@@ -62,13 +62,14 @@ Reference (deprecated, do not reuse): `scripts/lib/merge-protocol.sh`, `scripts/
 
 ### 2. Resolve Session Directory
 
-The skill must be **idempotent**: a user may invoke `--no-merge` first (archiving the session, creating the MR/PR), then re-invoke without `--no-merge` to merge. On the second invocation the session dir has already moved to `claude-works-completed/`.
+The skill must be **idempotent**: a user may invoke `--no-merge` first (archiving the session, creating the MR/PR), then re-invoke without `--no-merge` to merge. On the second invocation the session dir has already moved to `claude-works-completed/` and the sentinel has been cleared.
 
 1. If `$ARGUMENTS` names a directory anywhere under `<worktree>/**/claude-works/` *or* `<worktree>/**/claude-works-completed/`, use it.
-2. Otherwise pick the most-recently-modified subdir found via a single `find` across **both** trees (`find <worktree> -type d \( -path '*/claude-works/*' -o -path '*/claude-works-completed/*' \) -mindepth 2 -maxdepth 6`), then sort by mtime and pick the newest.
-3. Slug = basename of the session dir (e.g. `2026-05-15-foo-bar`).
-4. Record whether the resolved session is *already archived* (under `claude-works-completed/`). If yes, step 4 (Archive) is a no-op.
-5. Warn (do not refuse) if `phase3-implement-log.md` is missing — the user may be merging an artifact-less branch.
+2. Otherwise check `<worktree>/.qqq-current-session` (sentinel written by `qqq-worktree-create.sh`). If present and the path exists, use it.
+3. Otherwise pick the most-recently-modified subdir found via a single `find` across **both** trees (`find <worktree> -type d \( -path '*/claude-works/*' -o -path '*/claude-works-completed/*' \) -mindepth 2 -maxdepth 6`), then sort by mtime and pick the newest. This is the fall-back for idempotent re-invoke after the sentinel was cleared.
+4. Slug = basename of the session dir (e.g. `2026-05-15-foo-bar`).
+5. Record whether the resolved session is *already archived* (under `claude-works-completed/`). If yes, step 4 (Archive) is a no-op.
+6. Warn (do not refuse) if `phase3-implement-log.md` is missing — the user may be merging an artifact-less branch.
 
 ### 3. Stage Pending Phase Artifacts
 
@@ -88,6 +89,7 @@ This step makes `claude-works-completed/<slug>/` the canonical post-merge locati
 4. Ensure the parent of the destination exists: `mkdir -p <parent>/claude-works-completed`.
 5. Ask once via `AskUserQuestion`: **Archive `claude-works/<slug>` → `claude-works-completed/<slug>` now?** (default Yes). If declined, proceed without archiving (the artifacts stay in `claude-works/`).
 6. If accepted: `git mv <parent>/claude-works/<slug>/ <parent>/claude-works-completed/<slug>/` followed by `git commit -m "qqq: <slug> archive session to claude-works-completed"`. Single commit, no `--no-verify`.
+7. After the archive commit, clear the active-session sentinel: if `<worktree>/.qqq-current-session` exists, `git rm <worktree>/.qqq-current-session` and amend it into the same archive commit (or, if amending is not safe, follow with a second commit `qqq: <slug> clear active sentinel`). The sentinel is the qqq active-session pin and must not survive archive — its presence would mislead a subsequent `qqq tech-spec`/`plan`/`implement` into dispatching against an already-merged session.
 
 ### 5. Push the Branch
 
