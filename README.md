@@ -1,221 +1,324 @@
-# qqq — Three-Phase Development Harness for Claude Code
+# qqq — Claude Code용 3-페이즈 개발 하니스
 
-A Claude Code plugin that turns vague requests into reviewed, verified implementations. Each phase has a clear deliverable, a Socratic loop with the user, and a self-managed reviewer pass before moving forward.
+Claude Code 플러그인. 모호한 요청을 *리뷰·검증을 거친 구현*으로 변환한다. 각 페이즈는 분명한 산출물, 사용자와의 Socratic 루프, 다음 단계로 넘어가기 전 reviewer 패스를 갖는다.
 
 ```
 [Phase 0] → Phase 1 → Phase 2 → Phase 3
-register     clarify    plan       implement
-issue
+issue 등록    요구 명세    코드 계획    구현 + 리뷰
 (optional)
 ```
 
-Phase 0 (optional) registers a GitLab issue as `phase0-issue.md` so Phase 1 starts with shared context. Phase 1 produces an approved spec (and optional UI outline / NLTP). Phase 2 produces a reviewed code plan. Phase 3 executes the plan and reviews the diff. Each phase is dispatched as a fresh Claude Code background session via the `scripts/qqq` CLI; phase artifacts accumulate in `claude-works/<date_slug>/` and are read by the next phase.
+- **Phase 0** (선택) — GitLab 이슈를 `phase0-issue.md`로 스냅샷해 Phase 1에 공유 컨텍스트로 주입.
+- **Phase 1** — 승인된 spec (+ 선택적 UI outline / NLTP) 산출.
+- **Phase 2** — 리뷰를 거친 코드 계획 산출.
+- **Phase 3** — 계획 실행 + diff 리뷰.
 
-> **v3.0 migration note.** This version migrated the harness onto Claude Code v2.1.139+ standard infrastructure (`claude --bg / --worktree`, agent view, `~/.claude/jobs/`). The old fzf+tmux launcher (`scripts/qqq-workflow.sh`) and most of `scripts/lib/` were replaced by a single ~950-line `scripts/qqq` CLI + 2 hooks. See `MIGRATION_PLAN.md` for the design rationale.
+각 페이즈는 `scripts/qqq` CLI를 통해 *새 백그라운드 Claude Code 세션*으로 dispatch된다. 산출물은 worktree의 `claude-works/<date_slug>/` 아래에 누적되며 다음 페이즈가 disk에서 읽어 들인다.
 
-## Install
+> **v3.0 마이그레이션 메모.** v3.0에서 하니스를 Claude Code v2.1.139+ 표준 인프라(`claude --bg / --worktree`, agent view, `~/.claude/jobs/`)로 옮겼다. 옛 fzf+tmux 런처(`scripts/qqq-workflow.sh`)와 `scripts/lib/`의 대부분이 단일 ~950줄 `scripts/qqq` CLI + 2개 hook으로 대체됐다. 설계 배경은 `MIGRATION_PLAN.md` 참고.
+>
+> **v3.1 변경.** Hook이 **플러그인 레벨 리소스(`hooks/hooks.json`)**로 이동했다. 옛 `/qqq:install` per-project 단계가 사라지고, `claude --plugin-dir <qqq>` 한 번이면 hook까지 자동 등록된다. 기존 사용자 정리 절차는 아래 [Migration — v3.0 → v3.1](#migration--v30--v31) 항목을 참고할 것.
 
-### Option A — Test locally with `--plugin-dir`
+---
 
-```bash
-git clone https://github.com/kimosungk/claude-code-harness-qqq.git
-claude --plugin-dir ./claude-code-harness-qqq
+## 설치 / 업데이트 / 삭제
+
+qqq는 **로컬 marketplace** (`hskim-plugins`) 안의 플러그인으로 배포된다. Claude Code의 `/plugin` 슬래시 명령으로 관리한다.
+
+### 사전 준비 — 로컬 marketplace 부트스트랩
+
+> **본 repo 작성자 환경에는 이미 marketplace + qqq 클론이 갖춰져 있다** (`~/.claude/plugins/local/hskim-plugins/.claude-plugin/marketplace.json`이 존재하고 `qqq` 항목 포함). 그 경우 이 절은 건너뛰고 바로 [옵션 A](#옵션-a--marketplace를-통한-영구-설치-권장)로.
+
+다른 머신/계정에서 처음 셋업할 때는 다음 두 가지가 모두 필요하다:
+
+1. **로컬 marketplace 디렉터리 + manifest**
+
+   ```bash
+   mkdir -p ~/.claude/plugins/local/hskim-plugins/{.claude-plugin,plugins}
+   cat > ~/.claude/plugins/local/hskim-plugins/.claude-plugin/marketplace.json <<'JSON'
+   {
+     "name": "hskim-plugins",
+     "owner": { "name": "hskim" },
+     "metadata": { "description": "hskim's local plugins" },
+     "plugins": [
+       {
+         "name": "qqq",
+         "source": "./plugins/qqq",
+         "description": "Three-phase development harness (clarify → plan → implement) for Claude Code",
+         "version": "3.1.0"
+       }
+     ]
+   }
+   JSON
+   ```
+
+2. **qqq 플러그인 클론** — manifest의 `source`가 가리키는 경로에 그대로 둔다:
+
+   ```bash
+   git clone https://github.com/kimosungk/claude-code-harness-qqq.git \
+     ~/.claude/plugins/local/hskim-plugins/plugins/qqq
+   ```
+
+### 옵션 A — marketplace를 통한 영구 설치 (권장)
+
+새 Claude Code 세션 안에서 한 번만 실행:
+
+```
+/plugin marketplace add ~/.claude/plugins/local/hskim-plugins
+/plugin install qqq@hskim-plugins
 ```
 
-Skills are then available as `/qqq:<skill-name>` (e.g. `/qqq:clarify-requirement`).
+이후 어느 디렉터리에서 `claude`를 열어도 `qqq:*` skill + 두 hook이 자동 활성화된다. `--plugin-dir`를 매번 지정할 필요 없음.
 
-### Option B — Persistent install via marketplace
-
-Once a marketplace hosts this plugin, install with `/plugin install qqq@<marketplace>`. See [Claude Code plugin docs](https://code.claude.com/docs/en/plugins) for marketplace setup.
-
-### CLI shim
-
-Add a shell alias so `qqq` resolves to the plugin's CLI:
+**Scope** — Claude Code의 install 기본은 `user`(모든 프로젝트에서 자동 활성). 본 repo 작성자 환경은 history상 `scope=project`로 4개 프로젝트에 따로 설치되어 있는데(`~/.claude/plugins/installed_plugins.json` 참고), 이는 명시적 옵션 선택의 결과다. project scope을 원하면 `/plugin` UI에서 scope를 고르거나 다음 CLI를 사용한다:
 
 ```bash
+claude plugin install qqq@hskim-plugins --scope project   # 현 디렉터리에만
+claude plugin install qqq@hskim-plugins                   # 기본: user scope
+```
+
+### 옵션 B — `--plugin-dir`로 빠른 시험
+
+설치 절차 없이 매 세션마다 path를 직접 지정:
+
+```bash
+claude --plugin-dir ~/.claude/plugins/local/hskim-plugins/plugins/qqq
+```
+
+영구 등록되지 않으므로 일회성 시험·디버깅에 유용.
+
+### CLI alias
+
+`qqq` CLI를 PATH 단축어로 두는 alias (셋업은 한 번만):
+
+```bash
+# ~/.zshrc 또는 ~/.bashrc
 alias qqq="$HOME/.claude/plugins/local/hskim-plugins/plugins/qqq/scripts/qqq"
-# or, when testing locally:
-alias qqq="/abs/path/to/claude-code-harness-qqq/scripts/qqq"
 ```
 
-## Dependencies
+`source ~/.zshrc` 후 `qqq --help`로 검증.
 
-| Dependency | Required for | Notes |
+> v2.x 시절 alias가 `scripts/qqq-workflow.sh`를 가리킨다면 위 v3.x 경로로 갱신. v2 launcher는 v3.0에서 폐기됨.
+
+### 업데이트
+
+marketplace install은 Claude Code의 plugin **캐시**(`~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/`)에서 실행되며 marketplace source 디렉터리에서 직접 실행되지 *않는다*. 따라서 git pull만으로는 installed copy가 바뀌지 않는다. 3단계로 갱신한다:
+
+```bash
+# 1. marketplace source 코드 갱신 (디스크의 ./plugins/qqq)
+git -C ~/.claude/plugins/local/hskim-plugins/plugins/qqq pull --ff-only
+```
+
+```
+# 2. marketplace manifest 캐시 갱신 (autoUpdate=true면 자동, 명시 실행도 안전)
+/plugin marketplace update hskim-plugins
+
+# 3. 실제 plugin 캐시 카피 갱신 — scope별로 따로 실행
+/plugin update qqq@hskim-plugins                      # user scope
+/plugin update qqq@hskim-plugins --scope project      # project scope (각 프로젝트에서)
+```
+
+`~/.claude/plugins/known_marketplaces.json`의 해당 항목에 `"autoUpdate": true`가 켜져 있으면 2단계는 주기적으로 자동 수행되지만, 3단계는 항상 명시적이다. 기존에 v3.0 등 옛 버전으로 설치돼 있는 카피는 모두 3단계를 거쳐야 v3.1로 이동한다.
+
+### 삭제
+
+```
+/plugin uninstall qqq@hskim-plugins
+```
+
+marketplace 자체도 제거하려면:
+
+```
+/plugin marketplace remove hskim-plugins
+```
+
+로컬 클론 디렉터리는 위 명령으로 지워지지 않으니 디스크 공간 회수가 필요하면 수동 삭제:
+
+```bash
+rm -rf ~/.claude/plugins/local/hskim-plugins/plugins/qqq
+```
+
+### 옛 v2/v3.0 흔적 정리 (필요 시)
+
+옛 `/qqq:install`을 돌려 프로젝트 로컬 hook이 박혀 있는 경우는 아래 [Migration — v3.0 → v3.1](#migration--v30--v31) 절차 따라 정리.
+
+---
+
+## 의존성
+
+| 의존성 | 용도 | 비고 |
 |---|---|---|
-| Claude Code **2.1.139+** | CLI + skills | hard-gated by `scripts/qqq` startup check; uses `claude --bg`, `claude attach`, `claude rm`, `--append-system-prompt-file` |
-| `bash` 4+ | `scripts/qqq`, hooks | macOS default 3.2 is not supported |
-| `fzf` | `scripts/qqq` TUI + picker | required |
-| `jq` | CLI + hooks (JSON parsing) | required |
-| `git` | all phase agents | required |
-| `sha256sum` or `shasum -a 256` | Phase 2→3 review fingerprint | required |
-| `glab` | `qqq new --issue N`, `/qqq:merge-mr` (GitLab) | optional |
-| `gh` | `/qqq:merge-mr` (GitHub) | optional |
-| `codex` CLI | Codex-first review skills | optional — Claude fallback runs automatically if Codex is unavailable |
-| `playwright-cli` plugin | `ui-verifier` agent | **separate plugin**, install alongside qqq |
+| Claude Code **2.1.139+** | CLI + skill | `scripts/qqq` 진입 시 버전 게이트. `claude --bg`, `claude attach`, `claude rm`, `--append-system-prompt-file` 사용 |
+| `bash` 4+ | `scripts/qqq`, hook | macOS 기본 3.2 미지원 |
+| `fzf` | `scripts/qqq` TUI + picker | 필수 |
+| `jq` | CLI + hook (JSON 파싱) | 필수 |
+| `git` | 모든 phase agent | 필수 |
+| `sha256sum` 또는 `shasum -a 256` | Phase 2→3 리뷰 fingerprint | 필수 |
+| `glab` | `qqq new --issue N`, `/qqq:merge-mr` (GitLab) | 선택 |
+| `gh` | `/qqq:merge-mr` (GitHub) | 선택 |
+| `codex` CLI | Codex-우선 리뷰 skill | 선택 — 없으면 Claude fallback 자동 |
+| `playwright-cli` 플러그인 | `ui-verifier` agent | **별도 플러그인**, qqq와 병행 설치 |
+
+---
 
 ## `scripts/qqq` — CLI + TUI
 
-The entry point. Run `qqq --help` for the command list.
+진입점. `qqq --help`로 전체 명령 확인.
 
-| Command | What it does |
+| 명령 | 동작 |
 |---|---|
-| `qqq` | TUI entry (fzf menu) |
-| `qqq new <slug>` | Start a blank session in a new worktree (no issue) |
-| `qqq new <slug> --issue N` | Fetch GitLab issue → write `phase0-issue.md` inside worktree → start Phase 1 |
-| `qqq clarify` | Dispatch `/qqq:clarify-requirement` as a new bg session |
-| `qqq ui` | Dispatch `/qqq:ui-outline` (Optional) |
-| `qqq nltp` | Dispatch `/qqq:interview-nltp` (Optional) |
-| `qqq tech-spec` | Dispatch `/qqq:interview-tech` |
-| `qqq plan` | Dispatch `/qqq:code-plan` |
-| `qqq implement` | Dispatch `/qqq:code-implement` |
+| `qqq` | TUI 진입 (fzf 메뉴) |
+| `qqq new <slug>` | 이슈 없이 새 worktree에서 빈 세션 시작 |
+| `qqq new <slug> --issue N` | GitLab 이슈를 fetch → worktree 안에 `phase0-issue.md` 작성 → Phase 1 dispatch |
+| `qqq clarify` | `/qqq:clarify-requirement`를 새 bg 세션으로 dispatch |
+| `qqq ui` | `/qqq:ui-outline` dispatch (선택) |
+| `qqq nltp` | `/qqq:interview-nltp` dispatch (선택) |
+| `qqq tech-spec` | `/qqq:interview-tech` dispatch |
+| `qqq plan` | `/qqq:code-plan` dispatch |
+| `qqq implement` | `/qqq:code-implement` dispatch |
 | `qqq attach <id>` | `claude attach <id>` |
 | `qqq pick` | fzf → `claude attach` |
-| `qqq logs [<id>]` / `qqq stop [<id>]` / `qqq rm [<id>]` | Wrappers around `claude logs/stop/rm` (fzf if no id) |
-| `qqq merge-mr` | Run `/qqq:merge-mr` (push + MR/PR + merge — thin wrapper, no validation) |
-| `qqq verify` | Smoke tests (G1·G2·G4·G5·G6; G3 manual) |
+| `qqq logs [<id>]` / `qqq stop [<id>]` / `qqq rm [<id>]` | `claude logs/stop/rm` 래퍼 (id 없으면 fzf) |
+| `qqq merge-mr` | `/qqq:merge-mr` 실행 (push + MR/PR + merge — thin wrapper, 검증 없음) |
+| `qqq verify` | 스모크 테스트 (G1·G2·G4·G5·G6 자동, G3 수동) |
 
-### Phase-transition contract (F1=b)
+### 페이즈 전환 계약 (F1=b)
 
-Every phase command dispatches a **new background session**. There is no `--resume` for phase transitions. The next-phase skill reads previous-phase artifacts from disk (`phase{N-1}-*.md` in the worktree's `claude-works/<date_slug>/`).
+모든 페이즈 명령은 **새 백그라운드 세션 dispatch**. 페이즈 전환에 `--resume`을 쓰지 않는다. 다음 페이즈 skill은 worktree의 `claude-works/<date_slug>/` 안 `phase{N-1}-*.md`를 disk에서 직접 읽는다.
 
-### Race + isolation (CLI-9)
+### 경쟁 + 격리 (CLI-9)
 
-Before dispatching, `scripts/qqq`:
+`scripts/qqq`는 dispatch 전에 다음을 거부한다:
 
-- Refuses if cwd is the main checkout (not a linked worktree)
-- Refuses if any session at this worktree is in `working` / `idle` state
-- Refuses if any session at this worktree is in `exited` state (abnormal — investigate first)
-- Refuses if 2+ non-running sessions are at this worktree (confused state — `qqq pick` or `claude rm` first)
+- cwd가 main checkout이면 거부 (linked worktree가 아님)
+- 이 worktree에 `working` / `idle` 상태 세션이 있으면 거부
+- 이 worktree에 `exited` 상태 세션이 있으면 거부 (비정상 — 먼저 조사)
+- 이 worktree에 비-실행 세션이 2개 이상이면 거부 (혼란 상태 — `qqq pick` 또는 `claude rm` 먼저)
 
-State is inferred from `~/.claude/jobs/<short>/state.json` — there is no qqq lock file.
+상태는 `~/.claude/jobs/<short>/state.json`에서 추론한다 — qqq 자체 잠금 파일 없음.
 
-## What's inside
+---
 
-13 phase agents under `agents/`, 14 skills under `skills/`, 2 hooks under `hooks/`, 1 script under `scripts/` (`qqq`).
+## 구성 요소
 
-### Phase 0 — Register Issue (optional)
+`agents/` 13개 페이즈 에이전트, `skills/` 14개 skill, `hooks/` 2개 hook, `scripts/` 1개 스크립트(`qqq`).
 
-| Component | Purpose |
+### Phase 0 — 이슈 등록 (선택)
+
+| 컴포넌트 | 목적 |
 |---|---|
-| `qqq new <slug> --issue N` (CLI) | Fetch a GitLab issue via `glab`, snapshot it as `phase0-issue.md` *inside the new worktree*, auto-commit it, then dispatch Phase 1 with `--append-system-prompt-file phase0-issue.md`. Owned by the CLI; `phase0-issue.md` is read-only to all phase agents. |
+| `qqq new <slug> --issue N` (CLI) | `glab`로 GitLab 이슈 fetch → 새 worktree 안에 `phase0-issue.md` 스냅샷 + auto-commit → `--append-system-prompt-file phase0-issue.md`로 Phase 1 dispatch. CLI가 소유하며 `phase0-issue.md`는 모든 phase agent에게 read-only. |
 
 ### Phase 1 — Clarify
 
-| Agent / Skill | Purpose |
+| Agent / Skill | 목적 |
 |---|---|
-| `qqq:req-clarifier` / `qqq:clarify-requirement` | Socratic Q&A to draft `phase1-spec.md` |
-| `qqq:ui-outliner` / `qqq:ui-outline` | (optional) Minimal HTML UI outline |
-| `qqq:nltp-interviewer` / `qqq:interview-nltp` | (optional) Gherkin-style NLTP, gated by `qqq:nltp-reviewer` |
-| `qqq:tech-interviewer` / `qqq:interview-tech` | Frozen technical spec (`phase1-tech-spec.md`) — locks tech stack, data model, constraints |
+| `qqq:req-clarifier` / `qqq:clarify-requirement` | Socratic Q&A로 `phase1-spec.md` 초안 작성 |
+| `qqq:ui-outliner` / `qqq:ui-outline` | (선택) 최소 HTML UI outline |
+| `qqq:nltp-interviewer` / `qqq:interview-nltp` | (선택) Gherkin 스타일 NLTP. `qqq:nltp-reviewer`가 게이트 |
+| `qqq:tech-interviewer` / `qqq:interview-tech` | 동결된 기술 spec(`phase1-tech-spec.md`) — 스택·데이터 모델·제약 잠금 |
 
 ### Phase 2 — Plan
 
-| Agent / Skill | Purpose |
+| Agent / Skill | 목적 |
 |---|---|
-| `qqq:code-planner` / `qqq:code-plan` | Drafts `phase2-code-plan.md`, then runs explorer → architect → critic review loop |
-| `qqq:code-plan-review-explorer` | Gate 1 — verify plan facts, reuse, impact, pitfalls |
-| `qqq:code-plan-review-architect` | Gate 2 — structure, layering, contracts, security |
-| `qqq:code-plan-review-critic` | Gate 3 — premortem (failure modes, rollback, observability) |
+| `qqq:code-planner` / `qqq:code-plan` | `phase2-code-plan.md` 초안 + explorer → architect → critic 리뷰 루프 실행 |
+| `qqq:code-plan-review-explorer` | Gate 1 — 사실, 재사용, 영향도, 함정 검증 |
+| `qqq:code-plan-review-architect` | Gate 2 — 구조, 계층, 계약, 보안 |
+| `qqq:code-plan-review-critic` | Gate 3 — premortem (실패 모드, 롤백, 관측성) |
 
 ### Phase 3 — Implement
 
-| Agent / Skill | Purpose |
+| Agent / Skill | 목적 |
 |---|---|
-| `qqq:code-implementer` / `qqq:code-implement` | Executes the plan, writes `phase3-implement-log.md`, drives reviewer loop. **D1− gate**: requires `phase2-review-state.json` with `review_loop_completed: true`. |
-| `qqq:code-implement-reviewer` / `qqq:code-implement-review` | Codex-first diff review with Claude fallback. Reviews working-tree scope (tracked + untracked paths). On Codex failure the artifact records a 9-way `Failure category`; only infra-class categories allow Claude fallback, bug-class (`unsupported_config` / `schema` / `unknown`) auto-`REJECT`. |
+| `qqq:code-implementer` / `qqq:code-implement` | 계획 실행, `phase3-implement-log.md` 작성, reviewer 루프 구동. **D1− 게이트**: `phase2-review-state.json`의 `review_loop_completed: true` 필수. |
+| `qqq:code-implement-reviewer` / `qqq:code-implement-review` | Codex-우선 diff 리뷰, Claude fallback. working-tree 범위(tracked + untracked) 리뷰. Codex 실패 시 9-way `Failure category` 기록 — infra 계열만 Claude fallback, bug 계열(`unsupported_config` / `schema` / `unknown`)은 auto-`REJECT`. |
 
 ### Merge
 
-| Skill | Purpose |
+| Skill | 목적 |
 |---|---|
-| `qqq:merge-mr` | Thin glab/gh wrapper. Detects host from origin URL, commits pending phase artifacts, archives `claude-works/<slug>/` → `claude-works-completed/<slug>/`, pushes, creates MR/PR with rendered description, merges. **No validation of review state** — branch protection / required approvals on the host is mandatory. |
+| `qqq:merge-mr` | `glab`/`gh` thin wrapper. origin URL에서 host 감지, 미커밋 phase 산출물 commit, `claude-works/<slug>/` → `claude-works-completed/<slug>/` 아카이브, push, 렌더링된 description으로 MR/PR 생성, merge. **리뷰 상태 검증 없음** — host 측 branch protection / required approval이 필수. |
 
 ### Auxiliary
 
-| Component | Purpose |
+| 컴포넌트 | 목적 |
 |---|---|
-| `qqq:rebase-conflict-resolver` / `qqq:rebase-conflict-resolve` | Resolve in-progress git rebase conflicts (Codex-first, Claude fallback) |
-| `qqq:ui-verifier` | Browser-based UI verification via `playwright-cli`. Optional NLTP scenario contract drives the browser. |
-| `qqq:debug-frontend-pw` | Root-cause investigation in the browser via `playwright-cli` |
+| `qqq:rebase-conflict-resolver` / `qqq:rebase-conflict-resolve` | 진행 중인 git rebase conflict 해소 (Codex-우선, Claude fallback) |
+| `qqq:ui-verifier` | `playwright-cli` 기반 브라우저 UI 검증. NLTP 시나리오가 있으면 그것을 계약으로 사용. |
+| `qqq:debug-frontend-pw` | `playwright-cli` 기반 브라우저 안에서 원인 조사 |
 
-### Hooks (plugin-level, auto-registered via `hooks/hooks.json`)
+### Hooks (플러그인 레벨, `hooks/hooks.json`으로 자동 등록)
 
-| Hook | Event | Purpose |
+| Hook | 이벤트 | 목적 |
 |---|---|---|
-| `qqq-protect-files.sh` | `PreToolUse` (Edit\|Write\|Bash) | Blocks Edit/Write/Bash commands targeting `claude-works-completed/` (frozen post-merge artifacts) |
-| `qqq-context.sh` | `SessionStart` (startup\|resume\|compact) | Infers current phase from artifact presence and warns on uncommitted `phase{N}-*.md` |
+| `qqq-protect-files.sh` | `PreToolUse` (Edit\|Write\|Bash) | `claude-works-completed/` (병합 후 동결 산출물) 대상 Edit/Write/Bash 차단 |
+| `qqq-context.sh` | `SessionStart` (startup\|resume\|compact) | 산출물 유무로 현재 phase 추론, 미커밋 `phase{N}-*.md` 경고 |
 
-> v3.0 dropped three earlier hooks. `qqq-log-event.sh` (JSONL session log) is replaced by `~/.claude/jobs/<id>/state.json` + `claude logs`. `qqq-stop-guard.sh` (phase-exit gate) is replaced by the inline D1− gate in `skills/code-implement/SKILL.md`. `qqq-notify.sh` (OS notifications) is replaced by Claude Code's built-in agent view.
+> v3.0에서 옛 3개 hook을 폐기했다. `qqq-log-event.sh`(JSONL 세션 로그)는 `~/.claude/jobs/<id>/state.json` + `claude logs`로 대체. `qqq-stop-guard.sh`(phase-exit 게이트)는 `skills/code-implement/SKILL.md`의 inline D1− 게이트로 대체. `qqq-notify.sh`(OS 알림)는 Claude Code 내장 agent view로 대체.
+
+---
 
 ## Quality model — D1−
 
-qqq's phase gating is intentionally weak in v3.0. Only the Phase 2 → 3 transition has an automated gate (`review_loop_completed: true` check, inline in the implement skill). Other phases rely on model self-judgment, the PR reviewer, and operator discipline. This is an **operational contract**:
+qqq의 페이즈 게이팅은 v3.0에서 *의도적으로 약화*됐다. Phase 2 → 3 전환만 자동 게이트(`review_loop_completed: true` 체크, implement skill inline)를 가진다. 다른 페이즈는 모델 자체 판단, PR 리뷰어, 운영자 규율에 의존한다. 이는 **운영 계약**이다:
 
-1. **PR review is the final QA**. The phase gates are *recommended flow*, not validation. Code correctness is the responsibility of the human reviewer on the MR/PR.
-2. **Skipping phases is the operator's call**. `phase1-spec.md` is not required to enter Phase 2; the plan will just be worse.
-3. **Modifying a plan after review bypasses Phase 3 re-review**. No fingerprint enforcement at dispatch time.
+1. **PR 리뷰가 최종 QA**. phase 게이트는 *권장 흐름*일 뿐, validation이 아니다. 코드 정확성은 MR/PR의 사람 reviewer 책임.
+2. **페이즈 스킵은 운영자 판단**. Phase 2 진입에 `phase1-spec.md`가 필수는 아니다 — 다만 계획 품질이 떨어질 뿐.
+3. **리뷰 후 계획 수정은 Phase 3 재리뷰를 우회한다**. dispatch 시점 fingerprint 강제 없음.
 
-The trade-off is documented in `MIGRATION_PLAN.md §9.4`.
+트레이드오프는 `MIGRATION_PLAN.md §9.4`에 기록.
+
+---
 
 ## Migration — v3.0 → v3.1
 
-v3.1 ships hooks as a plugin-level resource (`hooks/hooks.json`), so the
-per-project `/qqq:install` step is gone. New users only need
-`claude --plugin-dir <qqq>` and the CLI alias.
+v3.1은 hook을 플러그인 레벨 리소스(`hooks/hooks.json`)로 배포한다. per-project `/qqq:install` 단계가 사라졌고, 신규 사용자는 `claude --plugin-dir <qqq>` (또는 marketplace install)만으로 끝난다.
 
-**Existing users** (who ran `/qqq:install` in any project) should remove the
-now-redundant per-project copies after pulling v3.1. **Only remove the qqq-*
-entries; preserve any unrelated hook objects in the same arrays.**
+**기존 사용자**(아무 프로젝트에서 `/qqq:install`을 돌렸던 사람)는 v3.1을 받은 뒤 per-project 사본을 정리해야 한다. **qqq-\* 항목만 제거**하고 같은 배열의 다른 hook 객체는 보존한다.
 
 ```bash
-# Step 1. Back up settings.json first
+# Step 1. settings.json 먼저 백업
 cp .claude/settings.json .claude/settings.json.bak
 
-# Step 2. Remove qqq-* hook script copies
+# Step 2. qqq-* hook 스크립트 복사본 제거
 rm -f .claude/hooks/qqq-protect-files.sh .claude/hooks/qqq-context.sh
 ```
 
-Step 3. Edit `.claude/settings.json` and remove only the hook command
-objects whose `command` field references `qqq-protect-files` or
-`qqq-context`. Concretely:
+Step 3. `.claude/settings.json`을 열어 `command` 필드에 `qqq-protect-files` 또는 `qqq-context`가 들어간 hook 명령 객체만 제거. 구체적으로:
 
-- **Remove** the command object inside `.hooks.PreToolUse[*].hooks[]`
-  whose `command` includes `qqq-protect-files.sh`.
-- **Remove** the command object inside `.hooks.SessionStart[*].hooks[]`
-  whose `command` includes `qqq-context.sh`.
-- **Preserve** all other command objects in the same `hooks[]` array.
-- **Optional cleanup** (only if all matched handlers/events become qqq-only):
-  If a handler's `hooks[]` array becomes empty after removal, you may drop
-  that handler object. If an event's array (e.g. `PreToolUse`) becomes empty,
-  you may drop that event key. **Empty arrays are not known to break Claude
-  Code** ([UNVERIFIED]: schema docs do not require array cleanup), so this
-  step is safe to skip; the `.bak` backup is your safety net either way.
+- `.hooks.PreToolUse[*].hooks[]` 안에서 `command`가 `qqq-protect-files.sh`를 포함하는 객체 **제거**.
+- `.hooks.SessionStart[*].hooks[]` 안에서 `command`가 `qqq-context.sh`를 포함하는 객체 **제거**.
+- 같은 `hooks[]` 배열의 다른 명령 객체는 모두 **보존**.
+- **선택 정리** (해당 handler/event가 qqq-only가 됐을 때만): handler의 `hooks[]` 배열이 비면 그 handler 객체를 drop해도 된다. event 배열(예: `PreToolUse`)이 비면 그 event 키 자체를 drop해도 된다. **빈 배열이 Claude Code를 깨뜨린다는 보고는 없으나** ([UNVERIFIED]: schema 문서가 배열 정리를 요구하진 않음) 굳이 손대지 않아도 안전 — `.bak` 백업이 안전망.
 
-Without cleanup, the old per-project hooks and new plugin-level hooks both
-fire — behavior is identical but `PreToolUse` runs twice per Edit/Write/Bash
-(~10-20ms extra).
+정리하지 않으면 옛 per-project hook과 신규 플러그인 레벨 hook이 모두 발화한다. 동작은 동일하지만 `PreToolUse`가 Edit/Write/Bash마다 2번 실행(~10-20ms 추가).
 
-## Development
+---
 
-While iterating on the plugin, edit files in this repo and run `/reload-plugins` in Claude Code to pick up changes without restart. For larger restructuring (new skill/agent directories), restart Claude Code so the new directories are watched.
+## 개발
+
+플러그인 반복 작업 중에는 이 repo 안의 파일을 수정하고 Claude Code에서 `/reload-plugins`를 실행해 변경을 재시작 없이 반영한다. 큰 구조 변경(새 skill/agent 디렉터리)은 Claude Code를 재시작해야 새 디렉터리가 감지된다.
 
 ```bash
 # syntax-check
 bash -n scripts/qqq hooks/qqq-protect-files.sh hooks/qqq-context.sh
 
-# validate plugin manifest
+# 플러그인 manifest 검증
 jq empty .claude-plugin/plugin.json
 
-# cheap smoke test
+# 가벼운 스모크
 ./scripts/qqq verify --cheap-only
 
-# live smoke test (~2-3 min, costs API tokens — uses a disposable bg session)
+# 라이브 스모크 (~2-3분, API 토큰 소모 — disposable bg 세션 사용)
 ./scripts/qqq verify
 ```
 
-## See also
+---
 
-- `MIGRATION_PLAN.md` — v3.0 design (CLI surface, F1=b, D1−, CLI-9, hook reduction)
-- [Claude Code plugin docs](https://code.claude.com/docs/en/plugins)
-- [Subagent docs](https://code.claude.com/docs/en/sub-agents) — covers persistent agent memory used by `qqq:ui-verifier`
-- [Skill docs](https://code.claude.com/docs/en/skills) — covers skill frontmatter and `${CLAUDE_SKILL_DIR}` substitution
+## 참고
+
+- `MIGRATION_PLAN.md` — v3.0 설계 (CLI surface, F1=b, D1−, CLI-9, hook 축소)
+- [Claude Code 플러그인 docs](https://code.claude.com/docs/en/plugins)
+- [Subagent docs](https://code.claude.com/docs/en/sub-agents) — `qqq:ui-verifier`가 사용하는 persistent agent memory 다룸
+- [Skill docs](https://code.claude.com/docs/en/skills) — skill frontmatter와 `${CLAUDE_SKILL_DIR}` 치환 다룸
