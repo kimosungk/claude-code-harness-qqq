@@ -19,9 +19,15 @@ issue 등록    요구 명세    코드 계획    구현 + 리뷰
 >
 > **v3.1 변경.** Hook이 **플러그인 레벨 리소스(`hooks/hooks.json`)**로 이동했다. 옛 `/qqq:install` per-project 단계가 사라지고, `claude --plugin-dir <qqq>` 한 번이면 hook까지 자동 등록된다. 기존 사용자 정리 절차는 아래 [Migration — v3.0 → v3.1](#migration--v30--v31) 항목을 참고할 것.
 >
-> **v3.3 변경 (worktree 모델 전환).** `qqq new`가 워크트리를 직접 만들지 않고 `claude --bg --worktree <slug>`를 통해 Claude Code 표준 워크트리 메커니즘에 위임한다. 새 `WorktreeCreate` hook(`hooks/qqq-worktree-create.sh`)이 워크트리 경로(`<repo>/.claude/worktrees/<slug>`)·브랜치명·`phase0-issue.md` commit·active-session sentinel을 동시에 처리한다. mtime 기반 `infer_session_dir`은 sentinel 기반 `read_active_session_dir`로 교체됐고 `claude-works-completed/` 오선택 버그가 해소된다. **신규 설치 후 `qqq install`을 한 번 실행해야 한다** — Claude Code v2.1.144에서 `WorktreeCreate`는 플러그인 레벨 `hooks/hooks.json`에서 호출되지 않아 user scope(`~/.claude/settings.json`)에 등록이 필요하다.
+> **v3.3 변경 (worktree 모델 전환).** v3.3는 `qqq new`가 워크트리를 직접 만들지 않고 `claude --bg --worktree <slug>`로 Claude Code 표준 워크트리 메커니즘에 위임했다. v3.5에서 이 결정을 되돌렸다(아래 v3.5 항목 참고).
 >
 > **v3.4 변경 (TUI 재설계).** `🔍 sessions` 메뉴가 `🌲 worktrees`로 바뀌었다. 최상위 메뉴 → worktree picker(qqq 관리만, status=active/archived/stale 표기) → 액션 메뉴(`claude-sessions` / `next-phase` / `remove-worktree`)의 3-스택 구조다. ESC는 한 단계씩 위로 pop하며 최상위에서만 종료된다. `next-phase`는 sentinel 2번째 줄에 박힌 caller subdir(예: `frontend`)을 그대로 cwd로 재현해 모노레포 컨텍스트가 phase 간에 보존된다 — sentinel 형식이 1줄(legacy)에서 2줄로 확장됐지만 `read_active_session_subdir`이 backward-compatible하다. `remove-worktree`는 `_verify_teardown`의 4-layer 가드를 차용하고 dirty 시 slug 재입력 confirm을 요구한다.
+>
+> **v3.5 변경 (worktree 모델 재전환 — X8).** v3.3에서 도입한 `claude --bg --worktree` 위임을 거두고 `primitive_new`가 `git worktree add`를 직접 호출하는 모델로 돌아왔다. 동기는 Claude Code v2.1.x의 plugin-scope `WorktreeCreate` dispatch 누락(anthropics/claude-code#46664)이다 — plugin이 자체 `hooks/hooks.json`에 등록한 `WorktreeCreate` hook이 절대 fire되지 않아 v3.3은 user-scope `~/.claude/settings.json`에 hook을 박는 우회 단계(`qqq install`)를 요구했다. v3.5는 worktree 생성을 qqq가 직접 소유함으로써 (a) `qqq install`/`uninstall`/G8 게이트를 제거하고 (b) `~/.claude/settings.json`을 더 이상 만지지 않으며 (c) upstream 패치 일정에 의존하지 않게 한다. v3.3가 v3.x repo_slug 사고를 막기 위해 도입한 두 안전장치(`git rev-parse --path-format=absolute` + sentinel 기반 `read_active_session_dir`)는 그대로 보존된다. **이전 `qqq install`을 한 번이라도 돌렸던 사용자에게**: `~/.claude/settings.json`에 박힌 WorktreeCreate hook 엔트리는 v3.5에서 더 이상 호출되지 않아 무해하다(qqq는 `--worktree` flag를 안 쓴다). 그대로 두거나 다음과 같이 정리해도 된다:
+>
+> ```bash
+> jq 'del(.hooks.WorktreeCreate)' ~/.claude/settings.json | sponge ~/.claude/settings.json
+> ```
 
 ---
 
@@ -72,16 +78,7 @@ qqq는 **로컬 marketplace** (`hskim-plugins`) 안의 플러그인으로 배포
 /plugin install qqq@hskim-plugins
 ```
 
-이후 어느 디렉터리에서 `claude`를 열어도 `qqq:*` skill + 두 plugin-level hook(PreToolUse, SessionStart)이 자동 활성화된다. `--plugin-dir`를 매번 지정할 필요 없음.
-
-마지막으로, **v3.3 부터는 `qqq install`을 한 번 실행**해야 `WorktreeCreate` hook이 user scope에 등록된다(plugin scope으로는 호출 안 됨):
-
-```bash
-qqq install
-qqq verify     # G8 항목이 PASS인지 확인
-```
-
-처음 워크트리 모드로 `claude`를 띄우는 디렉터리에서는 Claude Code의 workspace trust dialog를 한 번 수락해야 한다(`claude` 한 번 실행). docs/en/worktrees 참고.
+이후 어느 디렉터리에서 `claude`를 열어도 `qqq:*` skill + 두 plugin-level hook(PreToolUse, SessionStart)이 자동 활성화된다. `--plugin-dir`를 매번 지정할 필요 없음. v3.5부터는 추가 post-install 단계가 없다(`qqq install`은 폐기). `qqq verify`로 설치 상태 확인 가능.
 
 **Scope** — Claude Code의 install 기본은 `user`(모든 프로젝트에서 자동 활성). 본 repo 작성자 환경은 history상 `scope=project`로 4개 프로젝트에 따로 설치되어 있는데(`~/.claude/plugins/installed_plugins.json` 참고), 이는 명시적 옵션 선택의 결과다. project scope을 원하면 `/plugin` UI에서 scope를 고르거나 다음 CLI를 사용한다:
 

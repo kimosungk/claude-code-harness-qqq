@@ -4,6 +4,8 @@
 **Status**: v2.3.1 — Codex CONDITIONAL-GO + 보완 4건 반영 (F1=b 정합성, race 방지, PR 산출물 형식, 라인 수 현실화)
 **Scope**: agent view + worktree primitive 채택, 워크플로우 보존, 인프라 코드 ~75~78% 감소
 
+> **Amendment (v3.5 / X8, 2026-05-20)** — 이 문서가 채택한 "`--worktree` 위임" 전략(목적·§1; 표·§3.x.x; G1 게이트·§7)은 v3.5에서 되돌렸다. Claude Code v2.1.x의 plugin-scope `WorktreeCreate` dispatch 누락(anthropics/claude-code#46664) 때문에 v3.3가 도입한 user-scope hook 등록(`qqq install`) 단계가 영구 부담이 됐고, qqq의 모든 customization을 hook 외부에서 동등 구현 가능함이 audit으로 확인됐다. 현재 코드는 `git worktree add`를 직접 호출하며 `--worktree` flag를 사용하지 않는다. 자세한 동기와 매핑은 README의 v3.5 변경 섹션 참고. 이 문서는 v3.0~v3.4 설계 의도 기록으로 보존한다.
+
 ---
 
 ## 1. 목적과 범위
