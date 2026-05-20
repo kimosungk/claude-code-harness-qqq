@@ -1,5 +1,14 @@
 # qqq — Claude Code용 3-페이즈 개발 하니스
 
+> ⚠️ **이 레포는 더 이상 1차 배포처가 아닙니다.** qqq는 v1.0.0부터 [`kimosungk/claude-plugins`](https://github.com/kimosungk/claude-plugins) marketplace로 이전됐다. 새 설치 / 업데이트는 그쪽 README를 따른다:
+>
+> ```
+> /plugin marketplace add kimosungk/claude-plugins
+> /plugin install qqq@kimosungk-plugins
+> ```
+>
+> 이 레포(`kimosungk/claude-code-harness-qqq`)는 v3.x 개발사·이슈 추적·`X8` 마이그레이션 commit history 보존을 위한 historical mirror로 유지되지만, 추가 변경은 새 레포로 들어간다.
+
 Claude Code 플러그인. 모호한 요청을 *리뷰·검증을 거친 구현*으로 변환한다. 각 페이즈는 분명한 산출물, 사용자와의 Socratic 루프, 다음 단계로 넘어가기 전 reviewer 패스를 갖는다.
 
 ```
